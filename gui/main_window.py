@@ -13,6 +13,7 @@ La aplicación conecta la GUI con el motor de ejecución a través de
 import sys
 import os
 import re
+from pathlib import Path
 import matplotlib
 matplotlib.use('qtagg')  # Forzar a Matplotlib a usar el backend de Qt
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
@@ -22,6 +23,7 @@ from PySide6.QtWidgets import (QMainWindow, QDockWidget, QTextEdit, QTableWidget
                                QToolBar, QTreeView, QFileSystemModel, QFileDialog,
                                QDialog, QListWidget, QDialogButtonBox, QCompleter,
                                QToolTip, QStyle, QTabWidget)
+from PySide6.QtWidgets import QToolButton, QMenu
 from PySide6.QtGui import QAction, QTextCursor
 from PySide6.QtCore import Qt, QObject, Signal, QDir, QStringListModel, QSize
 from core.execution_engine import ExecutionEngine
@@ -38,11 +40,11 @@ class StreamRedirector(QObject):
     imprima en la terminal del proceso y mostrarlo dentro del widget de la consola.
     """
 
-    text_written = Signal(str)
+    texto_escrito = Signal(str)
 
     def write(self, text):
         """Emite el texto recibido como una señal para mostrarlo en la interfaz."""
-        self.text_written.emit(text)
+        self.texto_escrito.emit(text)
 
     def flush(self):
         """Método obligatorio para compatibilidad con objetos tipo archivo."""
@@ -132,10 +134,6 @@ class MatpyLabWindow(QMainWindow):
 
         self.setup_command_window()
 
-        self.redirector = StreamRedirector()
-        self.redirector.text_written.connect(self.imprimir_en_consola)
-        sys.stdout = self.redirector
-
         self.engine = ExecutionEngine()
 
         self.setup_workspace()
@@ -162,8 +160,15 @@ class MatpyLabWindow(QMainWindow):
         console_layout.setContentsMargins(0, 0, 0, 0)
 
         self.console_output = QTextEdit()
+        self.console_output.document().setMaximumBlockCount(5000)
         self.console_output.setReadOnly(True)
         self.console_output.setStyleSheet("background-color: #1e1e1e; color: #d4d4d4; font-family: Consolas, monospace; font-size: 14px;")
+
+        self.stdout_redirector = StreamRedirector()
+        self.stdout_redirector.texto_escrito.connect(self.escribir_en_consola)
+        sys.stdout = self.stdout_redirector
+        sys.stderr = self.stdout_redirector
+
         mensaje_inicio = (
             '<div style="font-family: Consolas, monospace; margin-bottom: 10px;">'
             '<span style="font-weight: bold;">MatpyLab v0.1 (R2026a)</span><br>'
@@ -308,7 +313,7 @@ class MatpyLabWindow(QMainWindow):
         if not comando.strip():
             return
 
-        self.console_output.append(f'<span style="color: #4CAF50;">>> {comando}</span>')
+        self.escribir_en_consola(f">> {comando}\n")
         self.console_input.clear()
 
         if comando.strip() == 'clc':
@@ -322,9 +327,9 @@ class MatpyLabWindow(QMainWindow):
         resultado, error = self.engine.execute_command(comando)
 
         if error:
-            self.console_output.append(f'<span style="color: #F44336;">Error: {error}</span>')
+            self.escribir_en_consola(f"Error: {error}\n")
         elif resultado is not None:
-            self.console_output.append(str(resultado))
+            self.escribir_en_consola(f"{resultado}\n")
 
         self.actualizar_workspace()
 
@@ -437,9 +442,51 @@ class MatpyLabWindow(QMainWindow):
 
         toolbar.addSeparator()
 
-        toolbox_action = QAction(estilo.standardIcon(QStyle.SP_DirIcon), "Toolboxes", self)
-        toolbox_action.triggered.connect(self.abrir_gestor_toolboxes)
-        toolbar.addAction(toolbox_action)
+        toolboxes_btn = QToolButton(self)
+        toolboxes_btn.setText("Toolboxes")
+        toolboxes_btn.setIcon(estilo.standardIcon(QStyle.SP_DirOpenIcon))
+        toolboxes_btn.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
+        toolboxes_btn.setPopupMode(QToolButton.InstantPopup)
+
+        self.toolbox_menu = QMenu(toolboxes_btn)
+
+        def generar_loader(modulo):
+            def loader():
+                exito, msj = self.engine.toolbox_manager.load_toolbox(modulo)
+                self.escribir_en_consola(f">> {msj}\n")
+                self.actualizar_workspace()
+            return loader
+
+        def actualizar_menu_toolboxes():
+            self.toolbox_menu.clear()
+
+            tb_dir = Path(__file__).parent.parent / "toolboxes"
+            toolboxes_encontrados = 0
+
+            if tb_dir.exists():
+                for archivo in tb_dir.glob("*.py"):
+                    if not archivo.name.startswith("__"):
+                        modulo = archivo.stem
+                        if modulo not in self.engine.toolbox_manager.loaded_toolboxes:
+                            act = QAction(f"📦 Cargar {modulo}", self)
+                            act.triggered.connect(generar_loader(modulo))
+                            self.toolbox_menu.addAction(act)
+                            toolboxes_encontrados += 1
+
+            if toolboxes_encontrados == 0:
+                act_vacio = QAction("No hay toolboxes nuevos...", self)
+                act_vacio.setEnabled(False)
+                self.toolbox_menu.addAction(act_vacio)
+
+            self.toolbox_menu.addSeparator()
+
+            act_crear = QAction("➕ Crear nuevo Toolbox (Plantilla)...", self)
+            act_crear.triggered.connect(self.crear_plantilla_toolbox)
+            self.toolbox_menu.addAction(act_crear)
+
+        self.toolbox_menu.aboutToShow.connect(actualizar_menu_toolboxes)
+        toolboxes_btn.setMenu(self.toolbox_menu)
+        toolbar.addWidget(toolboxes_btn)
 
     def nuevo_script(self, contenido="", titulo="Untitled.m"):
         editor = CodeEditor()
@@ -486,7 +533,7 @@ class MatpyLabWindow(QMainWindow):
         self.console_output.append('<span style="color: #2196F3;">>> Ejecutando script...</span><br>')
         error = self.engine.execute_script(script)
         if error:
-            self.console_output.append(f'<span style="color: #F44336;">Error: {error}</span>')
+            self.escribir_en_consola(f"Error: {error}\n")
         else:
             self.console_output.append('<span style="color: #4CAF50;">Ejecución finalizada.</span>')
         self.actualizar_workspace()
@@ -507,15 +554,47 @@ class MatpyLabWindow(QMainWindow):
 
         error = self.engine.execute_script(codigo)
         if error:
-            self.console_output.append(f'<span style="color: #F44336;">Error: {error}</span>')
+            self.escribir_en_consola(f"Error: {error}\n")
         self.actualizar_workspace()
 
-    def imprimir_en_consola(self, texto):
-        """Muestra salida estándar en la consola de la interfaz."""
-        self.console_output.insertPlainText(texto)
+    def crear_plantilla_toolbox(self):
+        plantilla = '''import numpy as np
+from core.toolbox_manager import MatpyLabToolbox
 
-        scrollbar = self.console_output.verticalScrollBar()
-        scrollbar.setValue(scrollbar.maximum())
+class MiToolboxPersonalizado(MatpyLabToolbox):
+    @property
+    def name(self):
+        return "Mi Primer Toolbox"
+        
+    @property
+    def description(self):
+        return "Un toolbox de prueba creado por la comunidad."
+        
+    def export_functions(self):
+        # 1. Define tus funciones personalizadas aquí
+        def saludar(nombre="Mundo"):
+            """Imprime un saludo en la consola."""
+            print(f"¡Hola {nombre} desde tu nuevo Toolbox!")
+            
+        def calcular_magia(x):
+            """Calcula el cuadrado del valor y le suma 42."""
+            return (x ** 2) + 42
+
+        # 2. Devuelve el diccionario de funciones a inyectar en el Workspace
+        return {
+            'saludar': saludar,
+            'magia': calcular_magia
+        }
+'''
+        self.nuevo_script(plantilla, "tb_mi_modulo.py")
+        self.console_output.append('<span style="color: #2196F3;">&gt;&gt; Plantilla generada. Guárdala en la carpeta "toolboxes/" para usarla.</span><br>')
+
+    def escribir_en_consola(self, texto):
+        cursor = self.console_output.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        self.console_output.setTextCursor(cursor)
+        self.console_output.insertPlainText(texto)
+        self.console_output.ensureCursorVisible()
 
     def setup_file_explorer(self):
         """Configura el panel del explorador de archivos del proyecto."""
@@ -548,9 +627,9 @@ class MatpyLabWindow(QMainWindow):
                     with open(ruta, 'r', encoding='utf-8') as f:
                         contenido = f.read()
                     self.nuevo_script(contenido, os.path.basename(ruta))
-                    self.console_output.append(f'<span style="color: #2196F3;">>> Archivo cargado: {os.path.basename(ruta)}</span><br>')
+                    self.escribir_en_consola(f">> Archivo cargado: {os.path.basename(ruta)}\n")
                 except Exception as e:
-                    self.console_output.append(f'<span style="color: #F44336;">Error al leer archivo: {str(e)}</span><br>')
+                    self.escribir_en_consola(f"Error al leer archivo: {e}\n")
             else:
                 self.console_output.append('<span style="color: #FF9800;">>> Formato no soportado. Selecciona un archivo .py o .m</span><br>')
 
@@ -563,9 +642,9 @@ class MatpyLabWindow(QMainWindow):
                 with open(ruta, 'r', encoding='utf-8') as f:
                     contenido = f.read()
                 self.nuevo_script(contenido, os.path.basename(ruta))
-                self.console_output.append(f'<span style="color: #2196F3;">>> Archivo cargado: {os.path.basename(ruta)}</span><br>')
+                self.escribir_en_consola(f">> Archivo cargado: {os.path.basename(ruta)}\n")
             except Exception as e:
-                self.console_output.append(f'<span style="color: #F44336;">Error al leer archivo: {str(e)}</span><br>')
+                self.escribir_en_consola(f"Error al leer archivo: {e}\n")
 
     def guardar_script(self):
         """Guarda el contenido del editor en un archivo `.py`."""
@@ -582,9 +661,9 @@ class MatpyLabWindow(QMainWindow):
                 with open(ruta, 'w', encoding='utf-8') as f:
                     f.write(editor.toPlainText())
                 self.tabs.setTabText(self.tabs.currentIndex(), os.path.basename(ruta))
-                self.console_output.append(f'<span style="color: #4CAF50;">>> Guardado: {os.path.basename(ruta)}</span><br>')
+                self.escribir_en_consola(f">> Guardado: {os.path.basename(ruta)}\n")
             except Exception as e:
-                self.console_output.append(f'<span style="color: #F44336;">Error: {str(e)}</span><br>')
+                self.escribir_en_consola(f"Error: {e}\n")
 
     def abrir_gestor_toolboxes(self):
         """Abre el diálogo que permite activar o desactivar toolboxes."""

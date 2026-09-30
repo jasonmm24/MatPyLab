@@ -19,6 +19,7 @@ import matplotlib.pyplot as plt
 import os
 import importlib.util
 import re
+from core.toolbox_manager import ToolboxManager
 
 
 class ExecutionEngine:
@@ -108,6 +109,7 @@ class ExecutionEngine:
 
         self.system_keys = set(self.workspace_globals.keys())
         self.toolboxes_cargados = {}
+        self.toolbox_manager = ToolboxManager(self)
 
     def cargar_toolbox(self, carpeta):
         """Carga un toolbox desde la carpeta `toolboxes`.
@@ -159,37 +161,44 @@ class ExecutionEngine:
         """Traduce sintaxis de MATLAB a Python en tiempo real."""
         import re
 
-        # Convertir comentarios de MATLAB a Python
-        comando = re.sub(r'(?<!["\'])\%(.*)', r'#\1', comando)
+        strings_protegidos = {}
 
-        # Traducir operadores elemento a elemento de MATLAB a NumPy
-        comando = comando.replace('.^', '**')
-        comando = comando.replace('.*', '*')
-        comando = comando.replace('./', '/')
+        def enmascarar(match):
+            llave = f"__STR_{len(strings_protegidos)}__"
+            strings_protegidos[llave] = match.group(0)
+            return llave
 
+        comando = re.sub(r'(["\'])(?:(?=(\\?))\2.)*?\1', enmascarar, comando)
+
+        comando = re.sub(r'\%(.*)', r'#\1', comando)
+        comando = re.sub(r'^help\s+([a-zA-Z0-9_]+)(?:\(\))?', r"help('\1')", comando)
         comando = re.sub(r'\bgrid\s+on\b', 'grid(True)', comando)
         comando = re.sub(r'\bgrid\s+off\b', 'grid(False)', comando)
         comando = re.sub(r'\bhold\s+on\b', 'hold(True)', comando)
         comando = re.sub(r'\bhold\s+off\b', 'hold(False)', comando)
-        comando = re.sub(r'^help\s+([a-zA-Z0-9_]+)', r"help('\1')", comando)
+
+        comando = comando.replace('.^', '**')
+        comando = comando.replace('.*', '*')
+        comando = comando.replace('./', '/')
 
         def reemplazar_matriz(match):
             contenido = match.group(1)
-
             if ',' in contenido and ';' not in contenido:
                 return match.group(0)
-
             filas = contenido.split(';')
             filas_python = []
             for fila in filas:
-                elementos = fila.strip().split()
-                elementos = [elemento for elemento in elementos if elemento]
+                elementos = [elemento for elemento in fila.strip().split() if elemento]
                 if elementos:
                     filas_python.append("[" + ", ".join(elementos) + "]")
-
+            if not filas_python:
+                return match.group(0)
             return "np.array([" + ", ".join(filas_python) + "])"
 
-        comando = re.sub(r'\[(.*?)\]', reemplazar_matriz, comando)
+        comando = re.sub(r'(?<![a-zA-Z0-9_])\[(.*?)\]', reemplazar_matriz, comando)
+
+        for llave, valor in strings_protegidos.items():
+            comando = comando.replace(llave, valor)
 
         return comando
 

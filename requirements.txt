@@ -8,3 +8,4 @@ PySide6>=6.5.0
 numpy>=1.24.0
 # matplotlib: permite graficación y visualización de resultados en modo interactivo.
 matplotlib>=3.7.0
+pyserial>=3.5

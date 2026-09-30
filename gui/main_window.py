@@ -13,16 +13,22 @@ La aplicación conecta la GUI con el motor de ejecución a través de
 import sys
 import os
 import re
+import matplotlib
+matplotlib.use('qtagg')  # Forzar a Matplotlib a usar el backend de Qt
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
+from matplotlib.figure import Figure
 from PySide6.QtWidgets import (QMainWindow, QDockWidget, QTextEdit, QTableWidget,
-                               QWidget, QVBoxLayout, QLineEdit, QTableWidgetItem,
+                               QWidget, QVBoxLayout, QTableWidgetItem,
                                QToolBar, QTreeView, QFileSystemModel, QFileDialog,
                                QDialog, QListWidget, QDialogButtonBox, QCompleter,
-                               QToolTip)
-from PySide6.QtGui import QAction
-from PySide6.QtCore import Qt, QObject, Signal, QDir, QStringListModel
+                               QToolTip, QStyle, QTabWidget)
+from PySide6.QtGui import QAction, QTextCursor
+from PySide6.QtCore import Qt, QObject, Signal, QDir, QStringListModel, QSize
 from core.execution_engine import ExecutionEngine
 from PySide6.QtWidgets import QListWidgetItem
 from gui.syntax_highlighter import PythonHighlighter
+from gui.custom_widgets import CodeEditor, ConsoleInput
+from gui.variable_inspector import VariableInspector
 
 
 class StreamRedirector(QObject):
@@ -111,15 +117,18 @@ class MatpyLabWindow(QMainWindow):
     def __init__(self):
         """Configura la ventana principal, los docks, la consola y el motor de ejecución."""
         super().__init__()
-        self.setWindowTitle("MatpyLab - v0.0")
+        self.setWindowTitle("MatpyLab - v0.1")
         self.resize(1200, 800)
 
-        self.editor = QTextEdit()
-        self.editor.setPlaceholderText("% Escribe tu script aquí...\n")
-        self.editor.setStyleSheet("background-color: #1e1e1e; color: #d4d4d4; font-family: Consolas, monospace; font-size: 14px; border: none;")
-        self.setCentralWidget(self.editor)
-
-        self.highlighter = PythonHighlighter(self.editor.document())
+        self.tabs = QTabWidget()
+        self.tabs.setTabsClosable(True)
+        self.tabs.tabCloseRequested.connect(self.cerrar_pestana)
+        self.tabs.setStyleSheet("""
+            QTabWidget::pane { border: 1px solid #3c3f41; }
+            QTabBar::tab { background: #2b2b2b; color: #888888; padding: 8px 15px; border-right: 1px solid #3c3f41; }
+            QTabBar::tab:selected { background: #1e1e1e; color: #ffffff; font-weight: bold; border-top: 2px solid #00BFFF; }
+        """)
+        self.setCentralWidget(self.tabs)
 
         self.setup_command_window()
 
@@ -131,11 +140,15 @@ class MatpyLabWindow(QMainWindow):
 
         self.setup_workspace()
         self.setup_file_explorer()
+        self.addDockWidget(Qt.LeftDockWidgetArea, self.dock_files)
+        self.addDockWidget(Qt.LeftDockWidgetArea, self.dock_workspace)
+        self.splitDockWidget(self.dock_files, self.dock_workspace, Qt.Vertical)
+        self.setup_plots_dock()
         self.setup_toolbar()
         self.actualizar_autocompletado()
 
-        self.is_dark_mode = True
-        self.aplicar_tema_oscuro()
+        self.is_dark_mode = False
+        self.aplicar_tema_claro()
 
         self.actualizar_autocompletado()
 
@@ -151,8 +164,16 @@ class MatpyLabWindow(QMainWindow):
         self.console_output = QTextEdit()
         self.console_output.setReadOnly(True)
         self.console_output.setStyleSheet("background-color: #1e1e1e; color: #d4d4d4; font-family: Consolas, monospace; font-size: 14px;")
+        mensaje_inicio = (
+            '<div style="font-family: Consolas, monospace; margin-bottom: 10px;">'
+            '<span style="font-weight: bold;">MatpyLab v0.1 (R2026a)</span><br>'
+            '<span>Para uso académico y desarrollo de ingeniería.</span><br>'
+            '<span style="color: #888888;">Escribe tus comandos a continuación o presiona F5 para ejecutar un script.</span>'
+            '</div><br>'
+        )
+        self.console_output.setHtml(mensaje_inicio)
 
-        self.console_input = QLineEdit()
+        self.console_input = ConsoleInput()
         self.console_input.setPlaceholderText(">> Ingresa un comando y presiona Enter...")
         self.console_input.setStyleSheet("background-color: #2d2d2d; color: #ffffff; font-family: Consolas, monospace; font-size: 14px; padding: 4px;")
 
@@ -174,15 +195,116 @@ class MatpyLabWindow(QMainWindow):
         """Crea el panel donde se muestran las variables activas del entorno."""
         self.dock_workspace = QDockWidget("Workspace", self)
         self.dock_workspace.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
-        self.workspace_table = QTableWidget(0, 3)
-        self.workspace_table.setHorizontalHeaderLabels(["Name", "Value", "Type"])
+        self.workspace_table = QTableWidget()
+        self.workspace_table.itemDoubleClicked.connect(self.abrir_inspector_variables)
+        self.workspace_table.setColumnCount(4)
+        self.workspace_table.setHorizontalHeaderLabels(["Name", "Value", "Size", "Class"])
         self.workspace_table.horizontalHeader().setStretchLastSection(True)
         self.dock_workspace.setWidget(self.workspace_table)
-        self.addDockWidget(Qt.RightDockWidgetArea, self.dock_workspace)
+
+    def setup_plots_dock(self):
+        self.dock_plots = QDockWidget("📈 Plots", self)
+        self.dock_plots.setAllowedAreas(Qt.RightDockWidgetArea | Qt.BottomDockWidgetArea)
+
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        self.figure = Figure()
+        self.canvas = FigureCanvasQTAgg(self.figure)
+        self.toolbar = NavigationToolbar2QT(self.canvas, self)
+
+        layout.addWidget(self.toolbar)
+        layout.addWidget(self.canvas)
+        self.dock_plots.setWidget(container)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.dock_plots)
+        self.dock_plots.hide()
+
+        self.ax = self.figure.add_subplot(111)
+
+        def custom_figure(*args, **kwargs):
+            self.dock_plots.show()
+            self.figure.clear()
+            self.ax = self.figure.add_subplot(111)
+            self.canvas.draw()
+
+        def custom_plot(*args, **kwargs):
+            """
+            Crea una gráfica lineal en 2D.
+            Uso: plot(X, Y, 'estilo')
+            Ejemplo:
+                t = linspace(0, 2*np.pi, 100)
+                y = np.sin(t)
+                plot(t, y, 'b-', linewidth=2)
+                grid on
+            """
+            self.dock_plots.show()
+            if self.ax.name != 'rectilinear':
+                self.figure.clear()
+                self.ax = self.figure.add_subplot(111)
+            result = self.ax.plot(*args, **kwargs)
+            self.canvas.draw()
+            return result
+
+        def custom_plot3(*args, **kwargs):
+            """
+            Crea una gráfica de líneas en 3D.
+            Uso: plot3(X, Y, Z, 'estilo')
+            Ejemplo:
+                t = linspace(0, 10*np.pi, 200)
+                plot3(np.sin(t), np.cos(t), t)
+                grid on
+            """
+            self.dock_plots.show()
+            if self.ax.name != '3d':
+                self.figure.clear()
+                self.ax = self.figure.add_subplot(111, projection='3d')
+            result = self.ax.plot(*args, **kwargs)
+            self.canvas.draw()
+            return result
+
+        def custom_grid(state=True):
+            self.ax.grid(state)
+            self.canvas.draw()
+
+        def custom_hold(state=True):
+            # Matplotlib superpone las gráficas nativamente; absorbe el comando de MATLAB.
+            pass
+
+        def custom_title(label, *args, **kwargs):
+            self.ax.set_title(label, *args, **kwargs)
+            self.canvas.draw()
+
+        def custom_xlabel(xlabel, *args, **kwargs):
+            self.ax.set_xlabel(xlabel, *args, **kwargs)
+            self.canvas.draw()
+
+        def custom_ylabel(ylabel, *args, **kwargs):
+            self.ax.set_ylabel(ylabel, *args, **kwargs)
+            self.canvas.draw()
+
+        def custom_zlabel(zlabel, *args, **kwargs):
+            if hasattr(self.ax, 'set_zlabel'):
+                self.ax.set_zlabel(zlabel, *args, **kwargs)
+                self.canvas.draw()
+
+        def custom_legend(*args, **kwargs):
+            self.ax.legend(*args, **kwargs)
+            self.canvas.draw()
+
+        funciones_graficas = {
+            'figure': custom_figure, 'plot': custom_plot, 'plot3': custom_plot3,
+            'grid': custom_grid, 'title': custom_title, 'legend': custom_legend,
+            'xlabel': custom_xlabel, 'ylabel': custom_ylabel, 'zlabel': custom_zlabel,
+            'hold': custom_hold
+        }
+        self.engine.workspace_globals.update(funciones_graficas)
+        self.engine.system_keys.update(funciones_graficas.keys())
 
     def procesar_comando(self):
         """Procesa la entrada de comando de la consola y la ejecuta en el motor."""
         comando = self.console_input.text()
+        self.console_input.add_to_history(comando)
         if not comando.strip():
             return
 
@@ -194,9 +316,7 @@ class MatpyLabWindow(QMainWindow):
             return
 
         if comando.strip() == 'clear':
-            self.engine.clear_workspace()
-            self.actualizar_workspace()
-            self.console_output.append('<span style="color: #4CAF50;">>> Workspace limpiado.</span>')
+            self.limpiar_workspace_interfaz()
             return
 
         resultado, error = self.engine.execute_command(comando)
@@ -208,6 +328,11 @@ class MatpyLabWindow(QMainWindow):
 
         self.actualizar_workspace()
 
+    def limpiar_workspace_interfaz(self):
+        self.engine.clear_workspace()
+        self.actualizar_workspace()
+        self.console_output.append('<span style="color: #4CAF50;">>> Workspace limpiado.</span>')
+
     def actualizar_workspace(self):
         """Actualiza la tabla del workspace con variables del entorno actual."""
         self.workspace_table.setRowCount(0)
@@ -218,50 +343,172 @@ class MatpyLabWindow(QMainWindow):
 
         for row, (nombre, valor) in enumerate(variables.items()):
             self.workspace_table.setItem(row, 0, QTableWidgetItem(nombre))
-            self.workspace_table.setItem(row, 1, QTableWidgetItem(str(valor)[:50]))
-            self.workspace_table.setItem(row, 2, QTableWidgetItem(type(valor).__name__))
+
+            str_val = str(valor)
+            if len(str_val) > 50:
+                str_val = str_val[:47] + "..."
+            self.workspace_table.setItem(row, 1, QTableWidgetItem(str_val))
+
+            size_str = "1x1"
+            if hasattr(valor, "shape"):
+                size_str = "x".join(map(str, valor.shape)) if valor.shape else "1x1"
+            elif isinstance(valor, (list, str, dict)):
+                size_str = f"1x{len(valor)}"
+            self.workspace_table.setItem(row, 2, QTableWidgetItem(size_str))
+            self.workspace_table.setItem(row, 3, QTableWidgetItem(type(valor).__name__))
 
         self.actualizar_autocompletado()
+
+    def abrir_inspector_variables(self, item):
+        """Abre el inspector visual para la variable seleccionada con doble clic."""
+        fila = item.row()
+        nombre_item = self.workspace_table.item(fila, 0)
+
+        if nombre_item:
+            nombre_var = nombre_item.text()
+            if nombre_var in self.engine.workspace_globals:
+                valor = self.engine.workspace_globals[nombre_var]
+                inspector = VariableInspector(nombre_var, valor, self)
+
+                if getattr(self, 'is_dark_mode', True):
+                    inspector.setStyleSheet("""
+                        QDialog { background-color: #2b2b2b; color: #ffffff; }
+                        QTableWidget { background-color: #1e1e1e; color: #ffffff; gridline-color: #3c3f41; }
+                        QHeaderView::section { background-color: #3c3f41; color: #ffffff; }
+                    """)
+                else:
+                    inspector.setStyleSheet("""
+                        QDialog { background-color: #f0f0f0; color: #000000; }
+                        QTableWidget { background-color: #ffffff; color: #000000; gridline-color: #d0d0d0; }
+                        QHeaderView::section { background-color: #e0e0e0; color: #000000; }
+                    """)
+
+                inspector.exec()
 
     def setup_toolbar(self):
         """Configura la barra de herramientas con comandos principales."""
         toolbar = QToolBar("Barra de Herramientas Principal")
+        toolbar.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
+        toolbar.setIconSize(QSize(24, 24))
         self.addToolBar(toolbar)
 
-        open_action = QAction("📂 Abrir", self)
+        estilo = self.style()
+
+        self.theme_action = QAction(estilo.standardIcon(QStyle.SP_DesktopIcon), "Tema", self)
+        self.theme_action.triggered.connect(self.toggle_tema)
+        toolbar.addAction(self.theme_action)
+
+        new_action = QAction(estilo.standardIcon(QStyle.SP_FileIcon), "Nuevo", self)
+        new_action.setShortcut("Ctrl+N")
+        new_action.triggered.connect(lambda: self.nuevo_script())
+        toolbar.addAction(new_action)
+
+        open_action = QAction(estilo.standardIcon(QStyle.SP_DialogOpenButton), "Abrir", self)
         open_action.setShortcut("Ctrl+O")
         open_action.triggered.connect(self.abrir_dialogo_archivo)
         toolbar.addAction(open_action)
 
-        save_action = QAction("💾 Guardar", self)
+        save_action = QAction(estilo.standardIcon(QStyle.SP_DialogSaveButton), "Guardar", self)
         save_action.setShortcut("Ctrl+S")
         save_action.triggered.connect(self.guardar_script)
         toolbar.addAction(save_action)
 
-        toolbox_action = QAction("🧩 Toolboxes", self)
-        toolbox_action.triggered.connect(self.abrir_gestor_toolboxes)
-        toolbar.addAction(toolbox_action)
+        toolbar.addSeparator()
 
-        self.theme_action = QAction("☀️ Tema Claro", self)
-        self.theme_action.triggered.connect(self.toggle_tema)
-        toolbar.addAction(self.theme_action)
+        clear_workspace_act = QAction(estilo.standardIcon(QStyle.SP_TrashIcon), "Clear\nWorkspace", self)
+        clear_workspace_act.triggered.connect(self.limpiar_workspace_interfaz)
+        toolbar.addAction(clear_workspace_act)
 
         toolbar.addSeparator()
 
-        run_action = QAction("▶ Run Script", self)
+        clear_cmd_act = QAction(estilo.standardIcon(QStyle.SP_BrowserReload), "Clear\nCommands", self)
+        clear_cmd_act.triggered.connect(lambda: self.console_output.clear())
+        toolbar.addAction(clear_cmd_act)
+
+        run_action = QAction(estilo.standardIcon(QStyle.SP_MediaPlay), "Run\nScript", self)
         run_action.setShortcut("F5")
         run_action.triggered.connect(self.ejecutar_script)
         toolbar.addAction(run_action)
 
+        run_sel_action = QAction(estilo.standardIcon(QStyle.SP_MediaSkipForward), "Run\nSelection", self)
+        run_sel_action.setShortcut("F9")
+        run_sel_action.triggered.connect(self.ejecutar_seleccion)
+        toolbar.addAction(run_sel_action)
+
+        toolbar.addSeparator()
+
+        toolbox_action = QAction(estilo.standardIcon(QStyle.SP_DirIcon), "Toolboxes", self)
+        toolbox_action.triggered.connect(self.abrir_gestor_toolboxes)
+        toolbar.addAction(toolbox_action)
+
+    def nuevo_script(self, contenido="", titulo="Untitled.m"):
+        editor = CodeEditor()
+        editor.setPlaceholderText("% Escribe tu script aquí...\n")
+        highlighter = PythonHighlighter(editor.document())
+        highlighter.set_theme(getattr(self, 'is_dark_mode', True))
+        editor.highlighter = highlighter
+
+        completer = QCompleter(self.completer_model, self)
+        if getattr(self, 'is_dark_mode', True):
+            completer.popup().setStyleSheet("background-color: #2b2b2b; color: #ffffff; border: 1px solid #3c3f41;")
+        else:
+            completer.popup().setStyleSheet("background-color: #ffffff; color: #000000; border: 1px solid #d0d0d0;")
+        editor.setCompleter(completer)
+
+        if getattr(self, 'is_dark_mode', True):
+            editor.setStyleSheet("background-color: #1e1e1e; color: #ffffff; font-family: Consolas, monospace; font-size: 14px; border: none;")
+        else:
+            editor.setStyleSheet("background-color: #ffffff; color: #000000; font-family: Consolas, monospace; font-size: 14px; border: none;")
+
+        if contenido:
+            editor.setPlainText(contenido)
+
+        idx = self.tabs.addTab(editor, titulo)
+        self.tabs.setCurrentIndex(idx)
+
+    def cerrar_pestana(self, index):
+        self.tabs.removeTab(index)
+
+    def obtener_editor_actual(self):
+        """Devuelve el editor activo, o None si no hay pestañas abiertas."""
+        if self.tabs.count() > 0:
+            return self.tabs.currentWidget()
+        return None
+
     def ejecutar_script(self):
         """Ejecuta el contenido actual del editor como un script completo."""
-        script = self.editor.toPlainText()
+        editor = self.obtener_editor_actual()
+        if editor is None:
+            self.console_output.append('<span style="color: #FF9800;">>> No hay ningún script abierto para ejecutar.</span><br>')
+            return
+
+        script = editor.toPlainText()
         self.console_output.append('<span style="color: #2196F3;">>> Ejecutando script...</span><br>')
         error = self.engine.execute_script(script)
         if error:
             self.console_output.append(f'<span style="color: #F44336;">Error: {error}</span>')
         else:
             self.console_output.append('<span style="color: #4CAF50;">Ejecución finalizada.</span>')
+        self.actualizar_workspace()
+
+    def ejecutar_seleccion(self):
+        editor = self.obtener_editor_actual()
+        if editor is None:
+            return
+
+        cursor = editor.textCursor()
+        if cursor.hasSelection():
+            codigo = cursor.selectedText().replace('\u2029', '\n')
+            self.console_output.append('<span style="color: #2196F3;">>> Ejecutando selección...</span><br>')
+        else:
+            cursor.select(QTextCursor.LineUnderCursor)
+            codigo = cursor.selectedText()
+            self.console_output.append('<span style="color: #2196F3;">>> Ejecutando línea actual...</span><br>')
+
+        error = self.engine.execute_script(codigo)
+        if error:
+            self.console_output.append(f'<span style="color: #F44336;">Error: {error}</span>')
+        self.actualizar_workspace()
 
     def imprimir_en_consola(self, texto):
         """Muestra salida estándar en la consola de la interfaz."""
@@ -288,7 +535,6 @@ class MatpyLabWindow(QMainWindow):
         self.tree_view.setHeaderHidden(True)
 
         self.dock_files.setWidget(self.tree_view)
-        self.addDockWidget(Qt.LeftDockWidgetArea, self.dock_files)
 
         self.tree_view.doubleClicked.connect(self.abrir_archivo)
 
@@ -297,43 +543,48 @@ class MatpyLabWindow(QMainWindow):
         ruta = self.file_model.filePath(index)
 
         if os.path.isfile(ruta):
-            if ruta.endswith('.py') or ruta.endswith('.txt'):
+            if ruta.endswith('.py') or ruta.endswith('.m') or ruta.endswith('.txt'):
                 try:
                     with open(ruta, 'r', encoding='utf-8') as f:
                         contenido = f.read()
-                    self.editor.setPlainText(contenido)
+                    self.nuevo_script(contenido, os.path.basename(ruta))
                     self.console_output.append(f'<span style="color: #2196F3;">>> Archivo cargado: {os.path.basename(ruta)}</span><br>')
                 except Exception as e:
                     self.console_output.append(f'<span style="color: #F44336;">Error al leer archivo: {str(e)}</span><br>')
             else:
-                self.console_output.append('<span style="color: #FF9800;">>> Formato no soportado. Selecciona un archivo .py</span><br>')
+                self.console_output.append('<span style="color: #FF9800;">>> Formato no soportado. Selecciona un archivo .py o .m</span><br>')
 
     def abrir_dialogo_archivo(self):
         """Abre el cuadro de diálogo para cargar un script desde disco."""
-        ruta, _ = QFileDialog.getOpenFileName(self, "Abrir Script", "", "Python Scripts (*.py);;Text Files (*.txt);;All Files (*)")
+        ruta, _ = QFileDialog.getOpenFileName(self, "Abrir Script", "", "MatpyLab/MATLAB Scripts (*.py *.m);;All Files (*)")
 
         if ruta:
             try:
                 with open(ruta, 'r', encoding='utf-8') as f:
                     contenido = f.read()
-                self.editor.setPlainText(contenido)
+                self.nuevo_script(contenido, os.path.basename(ruta))
                 self.console_output.append(f'<span style="color: #2196F3;">>> Archivo cargado: {os.path.basename(ruta)}</span><br>')
             except Exception as e:
                 self.console_output.append(f'<span style="color: #F44336;">Error al leer archivo: {str(e)}</span><br>')
 
     def guardar_script(self):
         """Guarda el contenido del editor en un archivo `.py`."""
-        ruta, _ = QFileDialog.getSaveFileName(self, "Guardar Script", "", "Python Scripts (*.py)")
+        editor = self.obtener_editor_actual()
+        if editor is None:
+            return
+
+        ruta, _ = QFileDialog.getSaveFileName(self, "Guardar Script", "", "Python Script (*.py);;MATLAB Script (*.m)")
 
         if ruta:
-            if not ruta.endswith('.py'):
+            if not (ruta.endswith('.py') or ruta.endswith('.m')):
                 ruta += '.py'
             try:
                 with open(ruta, 'w', encoding='utf-8') as f:
-                    f.write(self.editor.toPlainText())
-                self.console_output.append(f'<span style="color: #4CAF50;">>> Archivo guardado con éxito: {os.path.basename(ruta)}</span><br>')
+                    f.write(editor.toPlainText())
+                self.tabs.setTabText(self.tabs.currentIndex(), os.path.basename(ruta))
+                self.console_output.append(f'<span style="color: #4CAF50;">>> Guardado: {os.path.basename(ruta)}</span><br>')
             except Exception as e:
-                self.console_output.append(f'<span style="color: #F44336;">Error al guardar: {str(e)}</span><br>')
+                self.console_output.append(f'<span style="color: #F44336;">Error: {str(e)}</span><br>')
 
     def abrir_gestor_toolboxes(self):
         """Abre el diálogo que permite activar o desactivar toolboxes."""
@@ -382,8 +633,7 @@ class MatpyLabWindow(QMainWindow):
 
     def aplicar_tema_oscuro(self):
         """Aplica la paleta visual oscura a la interfaz."""
-        self.theme_action.setText("☀️ Tema Claro")
-        self.editor.setStyleSheet("background-color: #1e1e1e; color: #ffffff; font-family: Consolas, monospace; font-size: 14px; border: none;")
+        self.theme_action.setText("Tema Claro")
         self.console_output.setStyleSheet("background-color: #1e1e1e; color: #ffffff; font-family: Consolas, monospace; font-size: 14px;")
         self.console_input.setStyleSheet("background-color: #2d2d2d; color: #ffffff; font-family: Consolas, monospace; font-size: 14px; padding: 4px;")
 
@@ -398,12 +648,14 @@ class MatpyLabWindow(QMainWindow):
             QToolBar QToolButton { color: #ffffff; padding: 6px; border-radius: 4px; }
             QToolBar QToolButton:hover { background-color: #505355; }
         """)
-        self.highlighter.set_theme(is_dark=True)
+        for index in range(self.tabs.count()):
+            editor = self.tabs.widget(index)
+            editor.setStyleSheet("background-color: #1e1e1e; color: #ffffff; font-family: Consolas, monospace; font-size: 14px; border: none;")
+            editor.highlighter.set_theme(is_dark=True)
 
     def aplicar_tema_claro(self):
         """Aplica la paleta visual clara a la interfaz."""
-        self.theme_action.setText("🌙 Tema Oscuro")
-        self.editor.setStyleSheet("background-color: #ffffff; color: #000000; font-family: Consolas, monospace; font-size: 14px; border: none;")
+        self.theme_action.setText("Tema Oscuro")
         self.console_output.setStyleSheet("background-color: #f5f5f5; color: #000000; font-family: Consolas, monospace; font-size: 14px;")
         self.console_input.setStyleSheet("background-color: #ffffff; color: #000000; font-family: Consolas, monospace; font-size: 14px; padding: 4px; border: 1px solid #ccc;")
 
@@ -418,4 +670,7 @@ class MatpyLabWindow(QMainWindow):
             QToolBar QToolButton { color: #000000; padding: 6px; border-radius: 4px; }
             QToolBar QToolButton:hover { background-color: #d0d0d0; }
         """)
-        self.highlighter.set_theme(is_dark=False)
+        for index in range(self.tabs.count()):
+            editor = self.tabs.widget(index)
+            editor.setStyleSheet("background-color: #ffffff; color: #000000; font-family: Consolas, monospace; font-size: 14px; border: none;")
+            editor.highlighter.set_theme(is_dark=False)

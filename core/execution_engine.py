@@ -47,6 +47,65 @@ class ExecutionEngine:
             if not attr.startswith('_'):
                 self.workspace_globals[attr] = getattr(plt, attr)
 
+        # --- ADAPTADORES EXACTOS DE MATLAB (Deben ir al final para evitar ser sobrescritos) ---
+        def matlab_length(v):
+            """
+            Devuelve la longitud de la dimensión más grande de un arreglo.
+            Uso: L = length(X)
+            Ejemplo:
+                v = [1 2 3 4 5]
+                L = length(v)  % Devuelve 5
+            """
+            if hasattr(v, 'shape'):
+                return max(v.shape) if v.shape else 1
+            return len(v)
+
+        def matlab_size(v, dim=None):
+            """
+            Devuelve el tamaño de un arreglo en cada dimensión.
+            Uso: d = size(X) o d = size(X, dim)
+            Ejemplo:
+                M = [1 2; 3 4; 5 6]
+                filas = size(M, 1)  % Devuelve 3
+            """
+            if hasattr(v, 'shape'):
+                if dim is not None:
+                    # Protección: Si la dimensión solicitada existe (MATLAB usa índice 1)
+                    if (dim - 1) < len(v.shape):
+                        return v.shape[dim-1]
+                    # Si piden una dimensión extra (ej. la 3ra en un array 2D), MATLAB devuelve 1
+                    else:
+                        return 1
+                return v.shape
+            return np.shape(v)
+
+        def matlab_help(tema):
+            """Muestra la documentación y ejemplos de una función."""
+            import inspect
+            if isinstance(tema, str) and tema in self.workspace_globals:
+                obj = self.workspace_globals[tema]
+                nombre = tema
+            elif callable(tema):
+                obj = tema
+                nombre = getattr(obj, '__name__', 'función')
+            else:
+                print(f"No se encontró ayuda para: {tema}")
+                return
+
+            doc = getattr(obj, '__doc__', None)
+            print(f"\n{'='*50}\n 📖 Ayuda para: {nombre}\n{'='*50}")
+            if doc:
+                print(inspect.cleandoc(doc))
+            else:
+                print("No hay documentación o ejemplos disponibles para esta función.")
+            print("="*50 + "\n")
+
+        # Sobrescribir forzosamente cualquier función homónima inyectada previamente
+        self.workspace_globals['length'] = matlab_length
+        self.workspace_globals['size'] = matlab_size
+        self.workspace_globals['help'] = matlab_help
+        self.workspace_globals['disp'] = print  # Soporte nativo para imprimir en consola
+
         self.system_keys = set(self.workspace_globals.keys())
         self.toolboxes_cargados = {}
 
@@ -97,34 +156,41 @@ class ExecutionEngine:
             print(f"\n>> Toolbox desactivado: {carpeta}")
 
     def preprocesar_sintaxis(self, comando: str) -> str:
-        """Convierte sintaxis matricial tipo MATLAB a una expresión válida en Python.
+        """Traduce sintaxis de MATLAB a Python en tiempo real."""
+        import re
 
-        Ejemplo:
-            '[1 2; 3 4]' -> 'array([[1, 2], [3, 4]])'
+        # Convertir comentarios de MATLAB a Python
+        comando = re.sub(r'(?<!["\'])\%(.*)', r'#\1', comando)
 
-        Esta función detecta bloques entre corchetes y los transforma en llamadas a
-        `array(...)` para que NumPy entienda el formato MATLAB.
+        # Traducir operadores elemento a elemento de MATLAB a NumPy
+        comando = comando.replace('.^', '**')
+        comando = comando.replace('.*', '*')
+        comando = comando.replace('./', '/')
 
-        Args:
-            comando (str): Expresión a procesar.
+        comando = re.sub(r'\bgrid\s+on\b', 'grid(True)', comando)
+        comando = re.sub(r'\bgrid\s+off\b', 'grid(False)', comando)
+        comando = re.sub(r'\bhold\s+on\b', 'hold(True)', comando)
+        comando = re.sub(r'\bhold\s+off\b', 'hold(False)', comando)
+        comando = re.sub(r'^help\s+([a-zA-Z0-9_]+)', r"help('\1')", comando)
 
-        Returns:
-            str: Comando transformado con la sintaxis de matrices convertida.
-        """
         def reemplazar_matriz(match):
-            """Transforma una matriz interna en la forma de NumPy."""
             contenido = match.group(1)
-            filas = contenido.split(';')
-            filas_py = []
-            for fila in filas:
-                # Reemplazar múltiples espacios o comas por una sola coma
-                fila_limpia = re.sub(r'[,\s]+', ',', fila.strip())
-                fila_limpia = fila_limpia.strip(',')
-                filas_py.append(f"[{fila_limpia}]")
-            return f"array([{', '.join(filas_py)}])"
 
-        if '[' in comando and ']' in comando:
-            return re.sub(r'\[(.*?)\]', reemplazar_matriz, comando)
+            if ',' in contenido and ';' not in contenido:
+                return match.group(0)
+
+            filas = contenido.split(';')
+            filas_python = []
+            for fila in filas:
+                elementos = fila.strip().split()
+                elementos = [elemento for elemento in elementos if elemento]
+                if elementos:
+                    filas_python.append("[" + ", ".join(elementos) + "]")
+
+            return "np.array([" + ", ".join(filas_python) + "])"
+
+        comando = re.sub(r'\[(.*?)\]', reemplazar_matriz, comando)
+
         return comando
 
     def execute_command(self, command: str):
@@ -158,24 +224,19 @@ class ExecutionEngine:
         except Exception as e:
             return None, str(e)
 
-    def execute_script(self, script_text: str):
-        """Ejecuta un bloque completo de código en el entorno actual.
-
-        Args:
-            script_text (str): Script o conjunto de instrucciones a ejecutar.
-
-        Returns:
-            str | None: El mensaje de error si ocurre una excepción; de lo
-            contrario, `None`.
-
-        Este método es útil para correr varias líneas, definiciones de funciones o
-        secuencias de comandos que no necesitan devolver un valor inmediato.
-        """
-        if not script_text.strip():
-            return None
+    def execute_script(self, codigo: str):
         try:
-            exec(script_text, {}, self.workspace_globals)
-            return None
+            lineas = codigo.split('\n')
+            codigo_traducido = []
+
+            for linea in lineas:
+                if linea.strip().startswith('#'):
+                    codigo_traducido.append(linea)
+                else:
+                    codigo_traducido.append(self.preprocesar_sintaxis(linea))
+
+            codigo_final = "\n".join(codigo_traducido)
+            exec(codigo_final, self.workspace_globals)
         except Exception as e:
             return str(e)
 

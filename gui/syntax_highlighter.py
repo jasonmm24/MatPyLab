@@ -51,17 +51,17 @@ class PythonHighlighter(QSyntaxHighlighter):
         comment_format.setFontItalic(True)
 
         if is_dark:
-            keyword_format.setForeground(QColor("#00BFFF"))
-            number_format.setForeground(QColor("#00FF00"))
-            string_format.setForeground(QColor("#FF8C00"))
-            comment_format.setForeground(QColor("#00FA9A"))
-            func_format.setForeground(QColor("#FFD700"))
+            keyword_format.setForeground(QColor("#569CD6"))
+            number_format.setForeground(QColor("#B5CEA8"))
+            string_format.setForeground(QColor("#CE9178"))
+            comment_format.setForeground(QColor("#608B4E"))
+            func_format.setForeground(QColor("#4EC9B0"))
         else:
-            keyword_format.setForeground(QColor("#0000CD"))
-            number_format.setForeground(QColor("#228B22"))
-            string_format.setForeground(QColor("#B22222"))
-            comment_format.setForeground(QColor("#008080"))
-            func_format.setForeground(QColor("#8B008B"))
+            keyword_format.setForeground(QColor("#0000FF"))
+            number_format.setForeground(QColor("#000000"))
+            string_format.setForeground(QColor("#A020F0"))
+            comment_format.setForeground(QColor("#228B22"))
+            func_format.setForeground(QColor("#000000"))
 
         for word in self.keywords:
             self.rules.append((re.compile(word), keyword_format))

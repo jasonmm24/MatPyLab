@@ -39,7 +39,11 @@ class ExecutionEngine:
         variables creadas por el usuario.
         """
         plt.ion()
-        self.workspace_globals = {'np': np, 'plt': plt}
+        self.workspace_globals = {
+            'np': np,
+            'plt': plt,
+            'mod': np.mod  # Emulación nativa de la función mod() de MATLAB
+        }
 
         for attr in dir(np):
             if not attr.startswith('_'):
@@ -170,7 +174,8 @@ class ExecutionEngine:
 
         comando = re.sub(r'(["\'])(?:(?=(\\?))\2.)*?\1', enmascarar, comando)
 
-        comando = re.sub(r'\%(.*)', r'#\1', comando)
+        # Comentarios MATLAB: Solo al inicio de línea o tras un punto y coma
+        comando = re.sub(r'(^|;)\s*\%(.*)', r'\1#\2', comando)
         comando = re.sub(r'^help\s+([a-zA-Z0-9_]+)(?:\(\))?', r"help('\1')", comando)
         comando = re.sub(r'\bgrid\s+on\b', 'grid(True)', comando)
         comando = re.sub(r'\bgrid\s+off\b', 'grid(False)', comando)

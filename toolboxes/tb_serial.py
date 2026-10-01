@@ -1,117 +1,73 @@
 import serial
-import serial.tools.list_ports
+import time
 from core.toolbox_manager import MatpyLabToolbox
 
 
 class SerialToolbox(MatpyLabToolbox):
     @property
     def name(self):
-        return "Hardware & Serial Toolbox"
+        return "Serial Toolbox"
 
     @property
     def description(self):
-        return "Comunicación nativa con microcontroladores (ESP32, Arduino) vía puerto serial."
+        return "Comunicación bidireccional por puerto serie para leer sensores y controlar microcontroladores."
 
     def export_functions(self):
-        # Diccionario interno para mantener vivas las conexiones
-        self.active_connections = {}
-
-        def descartar_conexion(port):
-            connection = self.active_connections.pop(port, None)
-            if connection is not None:
-                try:
-                    connection.close()
-                except Exception:
-                    pass
-
-        def serial_ports():
+        def matlab_serialport(port, baudrate):
             """
-            Lista los puertos seriales disponibles.
-            Uso: puertos = serial_ports()
-            """
-            ports = serial.tools.list_ports.comports()
-            print("\n🔌 Puertos Seriales Detectados:")
-            for port in ports:
-                print(f"  - {port.device} : {port.description}")
-            print("-" * 30)
-            return [port.device for port in ports]
-
-        def serial_open(port, baudrate=115200):
-            """
-            Abre una conexión serial.
-            Uso: serial_open('COM3', 115200) o serial_open('/dev/ttyUSB0', 9600)
+            Abre un puerto serie.
+            Uso: s = serialport("COM3", 115200) o s = serialport("/dev/ttyUSB0", 115200)
             """
             try:
-                # Si ya estaba abierto, cerrarlo primero
-                if port in self.active_connections:
-                    self.active_connections[port].close()
+                s = serial.Serial(port, baudrate, timeout=1)
+                print(f"🔌 Conectado exitosamente al puerto {port} a {baudrate} baudios.")
+                return s
+            except Exception as e:
+                print(f"❌ Error al conectar con {port}: {e}")
+                return None
 
-                connection = serial.Serial(port, baudrate, timeout=1, write_timeout=1)
-                self.active_connections[port] = connection
-                print(f"✅ Puerto {port} abierto a {baudrate} baudios.")
-                return True
-            except Exception as error:
-                print(f"❌ Error al abrir {port}: {error}")
-                return False
+        def matlab_write(s, data, tipo='string'):
+            """
+            Escribe datos en el puerto serie.
+            Uso: write(s, "Hola Arduino") o write(s, [255, 0, 128, 255], 'uint8')
+            """
+            if s is None or not s.is_open:
+                print("❌ El puerto serie no está abierto.")
+                return
 
-        def serial_read(port):
+            if tipo == 'string':
+                s.write((str(data) + '\n').encode('utf-8'))
+            elif tipo == 'uint8':
+                s.write(bytearray(data))
+
+            # Pausa microscópica para asegurar que el buffer del SO haga el volcado
+            time.sleep(0.05)
+
+        def matlab_readline(s):
             """
-            Lee la última línea disponible en el búfer serial.
-            Uso: datos = serial_read('COM3')
+            Lee una línea de texto del puerto serie hasta encontrar un salto de línea.
+            Uso: dato = readline(s)
             """
-            if port in self.active_connections:
+            if s is None or not s.is_open:
+                return ""
+
+            if s.in_waiting > 0:
                 try:
-                    data = self.active_connections[port].readline().decode("utf-8").strip()
-                    return data
-                except Exception as error:
-                    print(f"⚠️ Error de conexión en {port}: {error}. Cerrando puerto.")
-                    descartar_conexion(port)
-                    return ""
-            print(f"⚠️ El puerto {port} no está abierto.")
+                    return s.readline().decode('utf-8').strip()
+                except UnicodeDecodeError:
+                    return "[Error de decodificación]"
             return ""
 
-        def serial_write(port, data):
-            """
-            Escribe una cadena de texto en el puerto serial.
-            Uso: serial_write('COM3', 'START\\n')
-            """
-            if port in self.active_connections:
-                try:
-                    if isinstance(data, str):
-                        data = data.encode("utf-8")
-                    self.active_connections[port].write(data)
-                    return True
-                except Exception as error:
-                    print(f"⚠️ Error de conexión en {port}: {error}. Cerrando puerto.")
-                    descartar_conexion(port)
-                    return False
-            print(f"⚠️ El puerto {port} no está abierto.")
-            return False
+        def matlab_clear(s):
+            """Limpia el buffer y cierra el puerto de forma segura."""
+            if s is not None and s.is_open:
+                s.flush()
+                s.close()
+                print("🔌 Puerto serie cerrado y liberado.")
 
-        def serial_close(port):
-            """
-            Cierra la conexión serial activa.
-            Uso: serial_close('COM3')
-            """
-            if port in self.active_connections:
-                self.active_connections[port].close()
-                del self.active_connections[port]
-                print(f"🛑 Puerto {port} cerrado.")
-            else:
-                print(f"El puerto {port} no estaba abierto.")
-
-        def serial_close_all():
-            """Cierra todos los puertos seriales abiertos."""
-            ports = list(self.active_connections.keys())
-            for port in ports:
-                serial_close(port)
-
-        # Retornamos el diccionario de funciones que se inyectarán al Workspace
         return {
-            "serial_ports": serial_ports,
-            "serial_open": serial_open,
-            "serial_read": serial_read,
-            "serial_write": serial_write,
-            "serial_close": serial_close,
-            "serial_close_all": serial_close_all,
+            'serialport': matlab_serialport,
+            'write': matlab_write,
+            'readline': matlab_readline,
+            'clear': matlab_clear
         }

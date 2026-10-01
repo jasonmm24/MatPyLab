@@ -227,6 +227,38 @@ class MatpyLabWindow(QMainWindow):
 
         self.ax = self.figure.add_subplot(111)
 
+        import matplotlib.pyplot as plt
+
+        self._original_figure = plt.figure
+        self._original_show = plt.show
+        self._original_gcf = plt.gcf
+        self._original_gca = plt.gca
+
+        def figura_integrada(*args, **kwargs):
+            """Redirige pyplot a la figura embebida y limpia el lienzo."""
+            self.dock_plots.show()
+            if args and args[0] is self.figure:
+                return self.figure
+            self.figure.clear()
+            self.ax = None
+            return self.figure
+
+        def eje_integrado():
+            """Devuelve el eje activo de la figura embebida, creándolo si hace falta."""
+            if self.ax not in self.figure.axes:
+                self.ax = self.figure.gca()
+            return self.ax
+
+        def mostrar_integrada(*args, **kwargs):
+            """Actualiza el canvas integrado en lugar de abrir una ventana."""
+            self.dock_plots.show()
+            self.canvas.draw()
+
+        plt.figure = figura_integrada
+        plt.show = mostrar_integrada
+        plt.gcf = lambda: self.figure
+        plt.gca = eje_integrado
+
         def custom_figure(*args, **kwargs):
             self.dock_plots.show()
             self.figure.clear()
@@ -244,7 +276,7 @@ class MatpyLabWindow(QMainWindow):
                 grid on
             """
             self.dock_plots.show()
-            if self.ax.name != 'rectilinear':
+            if self.ax not in self.figure.axes or self.ax.name != 'rectilinear':
                 self.figure.clear()
                 self.ax = self.figure.add_subplot(111)
             result = self.ax.plot(*args, **kwargs)
@@ -261,7 +293,7 @@ class MatpyLabWindow(QMainWindow):
                 grid on
             """
             self.dock_plots.show()
-            if self.ax.name != '3d':
+            if self.ax not in self.figure.axes or self.ax.name != '3d':
                 self.figure.clear()
                 self.ax = self.figure.add_subplot(111, projection='3d')
             result = self.ax.plot(*args, **kwargs)
@@ -269,7 +301,7 @@ class MatpyLabWindow(QMainWindow):
             return result
 
         def custom_grid(state=True):
-            self.ax.grid(state)
+            eje_integrado().grid(state)
             self.canvas.draw()
 
         def custom_hold(state=True):
@@ -277,24 +309,25 @@ class MatpyLabWindow(QMainWindow):
             pass
 
         def custom_title(label, *args, **kwargs):
-            self.ax.set_title(label, *args, **kwargs)
+            eje_integrado().set_title(label, *args, **kwargs)
             self.canvas.draw()
 
         def custom_xlabel(xlabel, *args, **kwargs):
-            self.ax.set_xlabel(xlabel, *args, **kwargs)
+            eje_integrado().set_xlabel(xlabel, *args, **kwargs)
             self.canvas.draw()
 
         def custom_ylabel(ylabel, *args, **kwargs):
-            self.ax.set_ylabel(ylabel, *args, **kwargs)
+            eje_integrado().set_ylabel(ylabel, *args, **kwargs)
             self.canvas.draw()
 
         def custom_zlabel(zlabel, *args, **kwargs):
-            if hasattr(self.ax, 'set_zlabel'):
-                self.ax.set_zlabel(zlabel, *args, **kwargs)
+            eje = eje_integrado()
+            if hasattr(eje, 'set_zlabel'):
+                eje.set_zlabel(zlabel, *args, **kwargs)
                 self.canvas.draw()
 
         def custom_legend(*args, **kwargs):
-            self.ax.legend(*args, **kwargs)
+            eje_integrado().legend(*args, **kwargs)
             self.canvas.draw()
 
         funciones_graficas = {
@@ -305,6 +338,16 @@ class MatpyLabWindow(QMainWindow):
         }
         self.engine.workspace_globals.update(funciones_graficas)
         self.engine.system_keys.update(funciones_graficas.keys())
+
+    def closeEvent(self, event):
+        """Restaura pyplot para no dejar el monkey patch activo al cerrar la GUI."""
+        import matplotlib.pyplot as plt
+
+        plt.figure = self._original_figure
+        plt.show = self._original_show
+        plt.gcf = self._original_gcf
+        plt.gca = self._original_gca
+        super().closeEvent(event)
 
     def procesar_comando(self):
         """Procesa la entrada de comando de la consola y la ejecuta en el motor."""
@@ -349,10 +392,17 @@ class MatpyLabWindow(QMainWindow):
         for row, (nombre, valor) in enumerate(variables.items()):
             self.workspace_table.setItem(row, 0, QTableWidgetItem(nombre))
 
-            str_val = str(valor)
-            if len(str_val) > 50:
-                str_val = str_val[:47] + "..."
-            self.workspace_table.setItem(row, 1, QTableWidgetItem(str_val))
+            # Limpieza visual para la columna "Value"
+            clase_nombre = type(valor).__name__
+            if clase_nombre == 'TransferFunction':
+                str_valor = "[Función de Transferencia]"
+            elif hasattr(valor, 'shape') and getattr(valor, 'size', 0) > 10:
+                str_valor = f"[{valor.shape[0]}x{valor.shape[1]} double]" if len(valor.shape) == 2 else f"[{valor.size} elements]"
+            else:
+                str_valor = str(valor).replace('\n', ' ')
+                if len(str_valor) > 40:
+                    str_valor = str_valor[:37] + "..."
+            self.workspace_table.setItem(row, 1, QTableWidgetItem(str_valor))
 
             size_str = "1x1"
             if hasattr(valor, "shape"):
@@ -363,6 +413,7 @@ class MatpyLabWindow(QMainWindow):
             self.workspace_table.setItem(row, 3, QTableWidgetItem(type(valor).__name__))
 
         self.actualizar_autocompletado()
+        self.canvas.draw()
 
     def abrir_inspector_variables(self, item):
         """Abre el inspector visual para la variable seleccionada con doble clic."""

@@ -1,6 +1,7 @@
-from PySide6.QtWidgets import QPlainTextEdit, QWidget, QLineEdit, QCompleter
+from PySide6.QtWidgets import QPlainTextEdit, QWidget, QLineEdit, QCompleter, QTextEdit
 from PySide6.QtGui import QPainter, QColor, QTextFormat, QFont, QTextCursor
-from PySide6.QtCore import Qt, QRect, QSize
+from PySide6.QtCore import Qt, QRect, QSize, QStringListModel
+import keyword
 
 
 class ConsoleInput(QLineEdit):
@@ -47,29 +48,57 @@ class CodeEditor(QPlainTextEdit):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.line_number_area = LineNumberArea(self)
+        self.breakpoints = set()
+        self.debug_line = None
         self.blockCountChanged.connect(self.update_line_number_area_width)
         self.updateRequest.connect(self.update_line_number_area)
         self.update_line_number_area_width(0)
-        self.completer = None
+        self.completer = QCompleter(self)
+        self.completer.setWidget(self)
+        self.completer.setCompletionMode(QCompleter.PopupCompletion)
+        self.completer.setCaseSensitivity(Qt.CaseInsensitive)
+        self.completer.activated.connect(self.insertar_completado)
+        self.palabras_base = list(keyword.kwlist) + [
+            'disp', 'mod', 'serialport', 'read', 'write', 'plot', 'np', 'plt', 'pd', 'time'
+        ]
+        self.completer_model = QStringListModel(self.palabras_base, self.completer)
+        self.completer.setModel(self.completer_model)
+        self.actualizar_diccionario(())
 
     def setCompleter(self, c):
-        if self.completer:
-            self.completer.activated.disconnect()
-        self.completer = c
-        c.setWidget(self)
-        c.setCompletionMode(QCompleter.PopupCompletion)
-        c.setCaseSensitivity(Qt.CaseInsensitive)
-        c.activated.connect(self.insertCompletion)
+        if self.completer is not c:
+            if self.completer:
+                self.completer.activated.disconnect()
+            self.completer = c
+            c.setWidget(self)
+            c.setCompletionMode(QCompleter.PopupCompletion)
+            c.setCaseSensitivity(Qt.CaseInsensitive)
+            c.activated.connect(self.insertar_completado)
 
-    def insertCompletion(self, completion):
-        if self.completer.widget() != self:
+    def actualizar_diccionario(self, variables_workspace):
+        """Actualiza las sugerencias con las variables disponibles en el motor."""
+        palabras = sorted(set(self.palabras_base).union(map(str, variables_workspace)))
+        self.completer_model.setStringList(palabras)
+
+    def insertar_completado(self, completion):
+        """Inserta la parte de la sugerencia que aún no está escrita."""
+        if self.completer.widget() is not self:
             return
         tc = self.textCursor()
         extra = len(completion) - len(self.completer.completionPrefix())
         tc.movePosition(QTextCursor.Left)
         tc.movePosition(QTextCursor.EndOfWord)
-        tc.insertText(completion[-extra:])
+        if extra > 0:
+            tc.insertText(completion[-extra:])
         self.setTextCursor(tc)
+
+    def insertCompletion(self, completion):
+        """Compatibilidad con el nombre histórico del manejador."""
+        self.insertar_completado(completion)
+
+    def actualizar_diccionario_legacy(self, variables_workspace):
+        """Compatibilidad con integraciones previas que actualizan el modelo."""
+        self.actualizar_diccionario(variables_workspace)
 
     def textUnderCursor(self):
         tc = self.textCursor()
@@ -82,7 +111,7 @@ class CodeEditor(QPlainTextEdit):
         super().focusInEvent(e)
 
     def keyPressEvent(self, e):
-        if self.completer and self.completer.popup() and self.completer.popup().isVisible():
+        if self.completer and self.completer.popup().isVisible():
             if e.key() in (Qt.Key_Enter, Qt.Key_Return, Qt.Key_Escape, Qt.Key_Tab, Qt.Key_Backtab):
                 e.ignore()
                 return
@@ -92,25 +121,25 @@ class CodeEditor(QPlainTextEdit):
         if self.completer is None:
             return
 
-        ctrlOrShift = e.modifiers() & (Qt.ControlModifier | Qt.ShiftModifier)
-        if ctrlOrShift and not e.text():
+        ctrl_or_shift = e.modifiers() & (Qt.ControlModifier | Qt.ShiftModifier)
+        if ctrl_or_shift and not e.text():
             return
 
-        eow = "~!@#$%^&*()_+{}|:\"<>?,./;'[]\\-=\n "
-        hasModifier = (e.modifiers() != Qt.NoModifier) and not ctrlOrShift
-        completionPrefix = self.textUnderCursor()
+        caracteres_fin = "~!@#$%^&*()+{}|:\"<>?,./;'[]\\-=\n "
+        tiene_modificador = (e.modifiers() != Qt.NoModifier) and not ctrl_or_shift
+        prefijo = self.textUnderCursor()
 
-        if hasModifier or not e.text() or len(completionPrefix) < 2 or e.text()[-1] in eow:
+        if tiene_modificador or not e.text() or len(prefijo) < 2 or not prefijo.isidentifier() or e.text()[-1] in caracteres_fin:
             self.completer.popup().hide()
             return
 
-        if completionPrefix != self.completer.completionPrefix():
-            self.completer.setCompletionPrefix(completionPrefix)
+        if prefijo != self.completer.completionPrefix():
+            self.completer.setCompletionPrefix(prefijo)
             self.completer.popup().setCurrentIndex(self.completer.completionModel().index(0, 0))
 
-        cr = self.cursorRect()
-        cr.setWidth(self.completer.popup().sizeHintForColumn(0) + self.completer.popup().verticalScrollBar().sizeHint().width())
-        self.completer.complete(cr)
+        rect = self.cursorRect()
+        rect.setWidth(self.completer.popup().sizeHintForColumn(0) + self.completer.popup().verticalScrollBar().sizeHint().width())
+        self.completer.complete(rect)
 
     def line_number_area_width(self):
         digits = 1
@@ -118,7 +147,35 @@ class CodeEditor(QPlainTextEdit):
         while max_value >= 10:
             max_value //= 10
             digits += 1
-        return 15 + self.fontMetrics().horizontalAdvance('9') * digits
+        return 27 + self.fontMetrics().horizontalAdvance('9') * digits
+
+    def toggle_breakpoint(self, line_number):
+        if line_number in self.breakpoints:
+            self.breakpoints.remove(line_number)
+            enabled = False
+        else:
+            self.breakpoints.add(line_number)
+            enabled = True
+        self.line_number_area.update()
+        return enabled
+
+    def set_debug_line(self, line_number):
+        self.debug_line = line_number
+        self.setExtraSelections([])
+        if line_number is None:
+            return
+
+        block = self.document().findBlockByNumber(line_number - 1)
+        if not block.isValid():
+            return
+
+        selection = QTextEdit.ExtraSelection()
+        selection.cursor = QTextCursor(block)
+        selection.format.setBackground(QColor("#514719"))
+        selection.format.setProperty(QTextFormat.FullWidthSelection, True)
+        self.setExtraSelections([selection])
+        self.setTextCursor(selection.cursor)
+        self.centerCursor()
 
     def update_line_number_area_width(self, _):
         self.setViewportMargins(self.line_number_area_width(), 0, 0, 0)
@@ -146,7 +203,13 @@ class CodeEditor(QPlainTextEdit):
         while block.isValid() and top <= event.rect().bottom():
             if block.isVisible() and bottom >= event.rect().top():
                 number = str(block_number + 1)
+                if block_number + 1 in self.breakpoints:
+                    painter.setPen(Qt.NoPen)
+                    painter.setBrush(QColor("#f14c4c"))
+                    marker_y = top + (self.fontMetrics().height() - 8) // 2
+                    painter.drawEllipse(3, marker_y, 8, 8)
                 painter.setPen(QColor("#858585"))
+                painter.setBrush(Qt.NoBrush)
                 painter.setFont(self.font())
                 painter.drawText(0, top, self.line_number_area.width() - 5, self.fontMetrics().height(), Qt.AlignRight, number)
             block = block.next()

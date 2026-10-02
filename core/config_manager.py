@@ -25,7 +25,7 @@ def load_config():
                         config[key] = defaults[key]
                 return config
         except Exception as error:
-            print(f"⚠️ Error leyendo config.json: {error}")
+            print(f"Error leyendo config.json: {error}")
             return get_default_config()
     return get_default_config()
 
@@ -36,4 +36,4 @@ def save_config(config_data):
         with open(CONFIG_FILE, "w", encoding="utf-8") as config_file:
             json.dump(config_data, config_file, indent=4)
     except Exception as error:
-        print(f"⚠️ Error guardando config.json: {error}")
+        print(f"Error guardando config.json: {error}")

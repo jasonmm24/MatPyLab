@@ -28,7 +28,7 @@ class StatsMLToolbox(MatpyLabToolbox):
 
             modelo = LinearRegression().fit(X_arr, y_arr)
             r2 = modelo.score(X_arr, y_arr)
-            print(f"📊 Modelo Lineal Ajustado:")
+            print("Modelo lineal ajustado:")
             print(f"   Ecuación: y = {modelo.intercept_:.4f} + {modelo.coef_[0]:.4f}*x")
             print(f"   Precisión (R^2): {r2:.4f}")
             return modelo
@@ -41,7 +41,7 @@ class StatsMLToolbox(MatpyLabToolbox):
             X_arr = np.array(X)
             # n_init='auto' para suprimir warnings de versiones recientes
             modelo = KMeans(n_clusters=k, random_state=42, n_init='auto').fit(X_arr)
-            print(f"🧠 K-Means: Datos agrupados en {k} clusters.")
+            print(f"K-Means: datos agrupados en {k} clusters.")
             return np.array(modelo.labels_), np.array(modelo.cluster_centers_)
 
         def matlab_pca(X, n_components=None):
@@ -53,7 +53,7 @@ class StatsMLToolbox(MatpyLabToolbox):
             modelo = PCA(n_components=n_components).fit(X_arr)
             transformados = modelo.transform(X_arr)
             varianza = modelo.explained_variance_ratio_ * 100
-            print(f"📉 PCA Completado: Varianza explicada por componente: {np.round(varianza, 2)}%")
+            print(f"PCA completado. Varianza explicada por componente: {np.round(varianza, 2)}%")
             return np.array(modelo.components_), np.array(transformados)
 
         return {

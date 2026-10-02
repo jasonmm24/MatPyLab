@@ -23,7 +23,7 @@ class ImageProcessingToolbox(MatpyLabToolbox):
             if img is not None:
                 # OpenCV lee en BGR por defecto, MATLAB y Matplotlib usan RGB
                 return cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            print(f"❌ Error: No se pudo cargar la imagen en '{filepath}'")
+            print(f"Error: no se pudo cargar la imagen en '{filepath}'.")
             return None
 
         def matlab_imshow(img):

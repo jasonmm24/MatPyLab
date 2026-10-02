@@ -1,0 +1,13 @@
+# Instalacion opcional para Toolboxes avanzados
+# pip install -r requirements-extras.txt
+
+control>=0.9.0
+pyserial>=3.5
+scikit-learn>=1.0.0
+pandas>=1.3.0
+joblib>=1.3.0
+opencv-python>=4.8.0
+
+# Descomentar segun necesidad del usuario:
+# torch>=2.0.0
+# tensorflow>=2.10.0

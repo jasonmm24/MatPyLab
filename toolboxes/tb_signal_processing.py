@@ -28,7 +28,6 @@ class SignalProcessingToolbox(MatpyLabToolbox):
             Aplica un filtro digital hacia adelante y hacia atrás (cero distorsión de fase).
             Uso: y_filtrada = filtfilt(b, a, x)
             """
-            # Convertir a array de numpy aplanado
             x_arr = np.array(x).flatten()
             y = signal.filtfilt(b, a, x_arr)
             return y

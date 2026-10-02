@@ -30,7 +30,7 @@ class DeepLearningToolbox(MatpyLabToolbox):
 
             layers.append(nn.Linear(in_features, output_size))
             net = nn.Sequential(*layers)
-            print(f"🧠 Red Neuronal creada: {input_size} entradas -> capas ocultas {hidden_sizes} -> {output_size} salidas.")
+            print(f"Red neuronal creada: {input_size} entradas -> capas ocultas {hidden_sizes} -> {output_size} salidas.")
             return net
 
         def matlab_trainNetwork(X, y, net, epochs=1000, lr=0.01):
@@ -51,7 +51,7 @@ class DeepLearningToolbox(MatpyLabToolbox):
             criterion = nn.MSELoss()
             optimizer = optim.Adam(net.parameters(), lr=lr)
 
-            print(f"⚙️ Entrenando red por {epochs} épocas...")
+            print(f"Entrenando red por {epochs} épocas...")
             for epoch in range(epochs):
                 optimizer.zero_grad()
                 outputs = net(X_tensor)
@@ -62,7 +62,7 @@ class DeepLearningToolbox(MatpyLabToolbox):
                 if (epoch + 1) % (epochs // 10) == 0 or epoch == 0:
                     print(f"   Época [{epoch+1}/{epochs}], Pérdida: {loss.item():.6f}")
 
-            print("✅ Entrenamiento completado.")
+            print("Entrenamiento completado.")
             return net
 
         def matlab_predict(net, X):

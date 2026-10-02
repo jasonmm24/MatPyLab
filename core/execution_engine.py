@@ -98,7 +98,7 @@ class ExecutionEngine:
                 return
 
             doc = getattr(obj, '__doc__', None)
-            print(f"\n{'='*50}\n 📖 Ayuda para: {nombre}\n{'='*50}")
+            print(f"\n{'='*50}\n Ayuda para: {nombre}\n{'='*50}")
             if doc:
                 print(inspect.cleandoc(doc))
             else:
@@ -109,7 +109,7 @@ class ExecutionEngine:
         self.workspace_globals['length'] = matlab_length
         self.workspace_globals['size'] = matlab_size
         self.workspace_globals['help'] = matlab_help
-        self.workspace_globals['disp'] = print  # Soporte nativo para imprimir en consola
+        self.workspace_globals['disp'] = print
 
         self.system_keys = set(self.workspace_globals.keys())
         self.toolboxes_cargados = {}

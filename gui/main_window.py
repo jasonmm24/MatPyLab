@@ -13,6 +13,8 @@ La aplicación conecta la GUI con el motor de ejecución a través de
 import sys
 import os
 import re
+import pickle
+import types
 import threading
 from pathlib import Path
 import matplotlib
@@ -23,10 +25,11 @@ from PySide6.QtWidgets import (QMainWindow, QDockWidget, QTextEdit, QTableWidget
                                QWidget, QVBoxLayout, QTableWidgetItem,
                                QToolBar, QTreeView, QFileSystemModel, QFileDialog,
                                QDialog, QListWidget, QDialogButtonBox, QCompleter,
-                               QToolTip, QStyle, QTabWidget)
+                               QToolTip, QStyle, QTabWidget, QMessageBox)
 from PySide6.QtWidgets import QToolButton, QMenu
-from PySide6.QtGui import QAction, QTextCursor
-from PySide6.QtCore import Qt, QObject, QThread, Signal, QStringListModel, QSize
+from PySide6.QtGui import QAction, QTextCursor, QKeySequence, QShortcut
+from PySide6.QtCore import (Qt, QObject, QThread, Signal, QStringListModel, QSize,
+                            QMutex, QWaitCondition)
 from core.execution_engine import ExecutionEngine
 from core.config_manager import load_config, save_config
 from PySide6.QtWidgets import QListWidgetItem
@@ -81,22 +84,82 @@ class ExecutionWorker(QThread):
     error = Signal(str)
     cancelled = Signal()
 
-    def __init__(self, engine, code, mode="script", parent=None):
+    paused = Signal(int, dict)
+
+    def __init__(self, engine, code, mode="script", breakpoints=None, parent=None):
         super().__init__(parent)
         self.engine = engine
         self.code = code
         self.mode = mode
         self.outcome = "running"
+        self.breakpoints = set(breakpoints or ())
+        self.is_debugging = bool(self.breakpoints)
+        self.mutex = QMutex()
+        self.condition = QWaitCondition()
+        self.step_mode = False
+        self._resume_requested = False
+        self._step_requested = False
+        self._debug_frame = None
+
+    def _is_debug_frame(self, frame):
+        if frame.f_code.co_filename != "<string>":
+            return False
+
+        current_frame = frame
+        while current_frame is not None:
+            if current_frame is self._debug_frame:
+                return True
+            current_frame = current_frame.f_back
+        return False
+
+    def trace_lines(self, frame, event, arg):
+        if event == "call" and self.is_debugging:
+            parent_frame = frame.f_back
+            if (
+                frame.f_code.co_name == "<module>"
+                and frame.f_code.co_filename == "<string>"
+                and parent_frame is not None
+                and parent_frame.f_code.co_name == "execute_script"
+            ):
+                self._debug_frame = frame
+
+        if event == "line":
+            if self.isInterruptionRequested():
+                raise ExecutionCancelled()
+
+            if (
+                self.is_debugging
+                and self._is_debug_frame(frame)
+                and (frame.f_lineno in self.breakpoints or self.step_mode)
+            ):
+                line_no = frame.f_lineno
+                locales = {
+                    key: value
+                    for key, value in frame.f_locals.items()
+                    if not key.startswith("__")
+                }
+                self.mutex.lock()
+                try:
+                    self.step_mode = False
+                    self._resume_requested = False
+                    self.paused.emit(line_no, locales)
+                    while (
+                        not self._resume_requested
+                        and not self.isInterruptionRequested()
+                    ):
+                        self.condition.wait(self.mutex)
+                    if self.isInterruptionRequested():
+                        raise ExecutionCancelled()
+                    self.step_mode = self._step_requested
+                finally:
+                    self.mutex.unlock()
+
+        return self.trace_lines
 
     def run(self):
         previous_trace = sys.gettrace()
 
-        def check_interruption(frame, event, arg):
-            if event == "line" and self.isInterruptionRequested():
-                raise ExecutionCancelled()
-            return check_interruption
-
-        sys.settrace(check_interruption)
+        sys.settrace(self.trace_lines)
         try:
             if self.mode == "command":
                 result, error = self.engine.execute_command(self.code)
@@ -124,6 +187,18 @@ class ExecutionWorker(QThread):
 
     def request_stop(self):
         self.requestInterruption()
+        self.mutex.lock()
+        self.condition.wakeAll()
+        self.mutex.unlock()
+
+    def resume(self, step=False):
+        self.mutex.lock()
+        try:
+            self._step_requested = step
+            self._resume_requested = True
+            self.condition.wakeAll()
+        finally:
+            self.mutex.unlock()
 
 
 class StreamRedirector(QObject):
@@ -230,6 +305,8 @@ class MatpyLabWindow(QMainWindow):
 
         self.engine = ExecutionEngine()
         self.worker = None
+        self.debug_locals = {}
+        self.debug_editor = None
         self.gui_executor = GuiThreadExecutor(self)
         self.plotter_window = None
 
@@ -240,6 +317,8 @@ class MatpyLabWindow(QMainWindow):
         self.splitDockWidget(self.dock_files, self.dock_workspace, Qt.Vertical)
         self.setup_plots_dock()
         self.setup_toolbar()
+        self.shortcut_bp = QShortcut(QKeySequence("Ctrl+B"), self)
+        self.shortcut_bp.activated.connect(self.toggle_breakpoint)
         self.actualizar_autocompletado()
 
         self.is_dark_mode = self.config.get("theme") != "light"
@@ -496,6 +575,7 @@ class MatpyLabWindow(QMainWindow):
         self.workspace_table.setRowCount(0)
 
         variables = {k: v for k, v in self.engine.workspace_globals.items() if not k.startswith('__') and k not in self.engine.system_keys}
+        variables.update(self.debug_locals)
 
         self.workspace_table.setRowCount(len(variables))
 
@@ -524,6 +604,100 @@ class MatpyLabWindow(QMainWindow):
 
         self.actualizar_autocompletado()
         self.canvas.draw()
+
+    def guardar_workspace(self):
+        """Guarda las variables serializables del usuario en un archivo pickle."""
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Guardar Workspace",
+            "",
+            "Archivos de Workspace (*.pkl);;Todos los archivos (*)",
+        )
+        if not file_path:
+            return
+        if not file_path.lower().endswith(".pkl"):
+            file_path += ".pkl"
+
+        datos_a_guardar = {}
+        for key, value in self.engine.workspace_globals.items():
+            if (
+                not isinstance(key, str)
+                or key.startswith("__")
+                or key in self.engine.system_keys
+                or isinstance(value, types.ModuleType)
+                or callable(value)
+            ):
+                continue
+            try:
+                pickle.dumps(value)
+                datos_a_guardar[key] = value
+            except Exception as error:
+                self.escribir_en_consola(
+                    f"Variable '{key}' ignorada (tipo {type(value).__name__} no serializable): {error}\n"
+                )
+
+        try:
+            with open(file_path, "wb") as workspace_file:
+                pickle.dump(datos_a_guardar, workspace_file)
+            self.escribir_en_consola(
+                f"Workspace guardado con éxito en: {file_path}\n"
+            )
+        except Exception as error:
+            QMessageBox.critical(
+                self,
+                "Error al guardar",
+                f"Hubo un problema al guardar el workspace:\n{error}",
+            )
+
+    def cargar_workspace(self):
+        """Carga variables de un archivo pickle confiable en el motor."""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Cargar Workspace",
+            "",
+            "Archivos de Workspace (*.pkl);;Todos los archivos (*)",
+        )
+        if not file_path:
+            return
+
+        confirmacion = QMessageBox.warning(
+            self,
+            "Cargar Workspace",
+            "Los archivos pickle pueden ejecutar código al abrirse. "
+            "Carga únicamente archivos de confianza. ¿Deseas continuar?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if confirmacion != QMessageBox.Yes:
+            return
+
+        try:
+            with open(file_path, "rb") as workspace_file:
+                datos_cargados = pickle.load(workspace_file)
+            if not isinstance(datos_cargados, dict):
+                raise ValueError("El archivo no contiene un Workspace válido.")
+
+            for key, value in datos_cargados.items():
+                if (
+                    not isinstance(key, str)
+                    or key.startswith("__")
+                    or key in self.engine.system_keys
+                    or isinstance(value, types.ModuleType)
+                    or callable(value)
+                ):
+                    continue
+                self.engine.workspace_globals[key] = value
+
+            self.actualizar_workspace()
+            self.escribir_en_consola(
+                f"Workspace cargado con éxito desde: {file_path}\n"
+            )
+        except Exception as error:
+            QMessageBox.critical(
+                self,
+                "Error al cargar",
+                f"Hubo un problema al leer el workspace:\n{error}",
+            )
 
     def abrir_inspector_variables(self, item):
         """Abre el inspector visual para la variable seleccionada con doble clic."""
@@ -617,6 +791,14 @@ class MatpyLabWindow(QMainWindow):
         toolbar.addAction(clear_workspace_act)
         self.clear_workspace_action = clear_workspace_act
 
+        save_workspace_action = QAction(estilo.standardIcon(QStyle.SP_DialogSaveButton), "Save\nWorkspace", self)
+        save_workspace_action.triggered.connect(self.guardar_workspace)
+        toolbar.addAction(save_workspace_action)
+
+        load_workspace_action = QAction(estilo.standardIcon(QStyle.SP_DialogOpenButton), "Load\nWorkspace", self)
+        load_workspace_action.triggered.connect(self.cargar_workspace)
+        toolbar.addAction(load_workspace_action)
+
         toolbar.addSeparator()
 
         clear_cmd_act = QAction(estilo.standardIcon(QStyle.SP_BrowserReload), "Clear\nCommands", self)
@@ -639,6 +821,16 @@ class MatpyLabWindow(QMainWindow):
         self.stop_action.setEnabled(False)
         self.stop_action.triggered.connect(self.detener_ejecucion)
         toolbar.addAction(self.stop_action)
+
+        self.continue_action = QAction(estilo.standardIcon(QStyle.SP_MediaPlay), "Continuar", self)
+        self.continue_action.setEnabled(False)
+        self.continue_action.triggered.connect(self.debugger_continue)
+        toolbar.addAction(self.continue_action)
+
+        self.step_action = QAction(estilo.standardIcon(QStyle.SP_MediaSkipForward), "Paso a Paso", self)
+        self.step_action.setEnabled(False)
+        self.step_action.triggered.connect(self.debugger_step)
+        toolbar.addAction(self.step_action)
 
         serial_plotter_action = QAction(
             estilo.standardIcon(QStyle.SP_ComputerIcon), "Serial Plotter", self
@@ -709,12 +901,11 @@ class MatpyLabWindow(QMainWindow):
         highlighter.set_theme(getattr(self, 'is_dark_mode', True))
         editor.highlighter = highlighter
 
-        completer = QCompleter(self.completer_model, self)
         if getattr(self, 'is_dark_mode', True):
-            completer.popup().setStyleSheet("background-color: #2b2b2b; color: #ffffff; border: 1px solid #3c3f41;")
+            editor.completer.popup().setStyleSheet("background-color: #2b2b2b; color: #ffffff; border: 1px solid #3c3f41;")
         else:
-            completer.popup().setStyleSheet("background-color: #ffffff; color: #000000; border: 1px solid #d0d0d0;")
-        editor.setCompleter(completer)
+            editor.completer.popup().setStyleSheet("background-color: #ffffff; color: #000000; border: 1px solid #d0d0d0;")
+        editor.actualizar_diccionario(self.engine.workspace_globals.keys())
 
         if getattr(self, 'is_dark_mode', True):
             editor.setStyleSheet("background-color: #1e1e1e; color: #ffffff; font-family: Consolas, monospace; font-size: 14px; border: none;")
@@ -761,7 +952,7 @@ class MatpyLabWindow(QMainWindow):
             codigo = cursor.selectedText()
             self.console_output.append('<span style="color: #2196F3;">>> Ejecutando línea actual...</span><br>')
 
-        self.ejecutar_codigo(codigo)
+        self.ejecutar_codigo(codigo, mode="selection")
 
     def ejecutar_codigo(self, codigo, mode="script"):
         """Inicia una ejecución asíncrona única y bloquea acciones incompatibles."""
@@ -769,7 +960,12 @@ class MatpyLabWindow(QMainWindow):
             self.escribir_en_consola("Ya hay una ejecución activa; deténla antes de iniciar otra.\n")
             return
 
-        self.worker = ExecutionWorker(self.engine, codigo, mode, self)
+        editor = self.obtener_editor_actual() if mode == "script" else None
+        breakpoints = editor.breakpoints if editor is not None else ()
+        self.debug_editor = editor if breakpoints else None
+        self.debug_locals = {}
+        self.worker = ExecutionWorker(self.engine, codigo, mode, breakpoints, self)
+        self.worker.paused.connect(self.on_debugger_paused)
         self.worker.error.connect(self.mostrar_error_consola)
         self.worker.result_ready.connect(self.mostrar_resultado_comando)
         self.worker.cancelled.connect(self.mostrar_ejecucion_cancelada)
@@ -777,6 +973,8 @@ class MatpyLabWindow(QMainWindow):
 
         self.run_action.setEnabled(False)
         self.run_selection_action.setEnabled(False)
+        self.continue_action.setEnabled(False)
+        self.step_action.setEnabled(False)
         self.stop_action.setEnabled(True)
         self.console_input.setEnabled(False)
         self.clear_workspace_action.setEnabled(False)
@@ -795,8 +993,53 @@ class MatpyLabWindow(QMainWindow):
     def detener_ejecucion(self):
         if self.worker is not None and self.worker.isRunning():
             self.worker.request_stop()
+            self.continue_action.setEnabled(False)
+            self.step_action.setEnabled(False)
             self.stop_action.setEnabled(False)
             self.escribir_en_consola("Solicitando detener la ejecución...\n")
+
+    def toggle_breakpoint(self):
+        editor = self.obtener_editor_actual()
+        if not isinstance(editor, CodeEditor):
+            return
+
+        line_num = editor.textCursor().blockNumber() + 1
+        enabled = editor.toggle_breakpoint(line_num)
+        estado = "añadido" if enabled else "quitado"
+        self.escribir_en_consola(f"Breakpoint {estado} en línea {line_num}.\n")
+
+    def on_debugger_paused(self, line_num, locales):
+        """Muestra la ubicación pausada y sus variables locales."""
+        self.debug_locals = {
+            key: value
+            for key, value in locales.items()
+            if not key.startswith("__") and key not in self.engine.system_keys
+        }
+        if self.debug_editor is not None:
+            self.tabs.setCurrentWidget(self.debug_editor)
+            self.debug_editor.set_debug_line(line_num)
+        self.escribir_en_consola(f"Depurador pausado en la línea {line_num}.\n")
+        self.actualizar_workspace()
+        self.continue_action.setEnabled(True)
+        self.step_action.setEnabled(True)
+
+    def _resume_debugger(self, step):
+        if self.worker is None or not self.worker.isRunning():
+            return
+
+        self.debug_locals = {}
+        if self.debug_editor is not None:
+            self.debug_editor.set_debug_line(None)
+        self.actualizar_workspace()
+        self.continue_action.setEnabled(False)
+        self.step_action.setEnabled(False)
+        self.worker.resume(step=step)
+
+    def debugger_continue(self):
+        self._resume_debugger(step=False)
+
+    def debugger_step(self):
+        self._resume_debugger(step=True)
 
     def restaurar_interfaz(self):
         """Actualiza el workspace y restaura los controles tras la ejecución."""
@@ -806,9 +1049,15 @@ class MatpyLabWindow(QMainWindow):
 
         if worker.outcome == "completed":
             self.escribir_en_consola("Ejecución finalizada.\n")
+        if self.debug_editor is not None:
+            self.debug_editor.set_debug_line(None)
+        self.debug_editor = None
+        self.debug_locals = {}
         self.actualizar_workspace()
         self.run_action.setEnabled(True)
         self.run_selection_action.setEnabled(True)
+        self.continue_action.setEnabled(False)
+        self.step_action.setEnabled(False)
         self.stop_action.setEnabled(False)
         self.console_input.setEnabled(True)
         self.clear_workspace_action.setEnabled(True)
@@ -967,8 +1216,11 @@ class MiToolboxPersonalizado(MatpyLabToolbox):
         """Actualiza la lista de palabras conocidas para el autocompleter."""
         palabras = list(self.engine.workspace_globals.keys())
         palabras.extend(['clc', 'clear'])
-
-        self.completer_model.setStringList(palabras)
+        self.completer_model.setStringList(sorted(set(palabras)))
+        for index in range(self.tabs.count()):
+            editor = self.tabs.widget(index)
+            if isinstance(editor, CodeEditor):
+                editor.actualizar_diccionario(self.engine.workspace_globals.keys())
 
     def mostrar_ayuda_funcion(self, texto):
         """Muestra una pista rápida con la documentación de una función escrita."""

@@ -1,237 +1,167 @@
 # MatPyLab
 
-<div align="center">
+MatPyLab es un entorno gráfico de programación científica construido con Python y PySide6. Integra una consola interactiva, un editor de scripts, visualización de datos y extensiones para tareas de ingeniería y análisis numérico.
 
-  <img src="https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white" alt="Python 3.10+" />
-  <img src="https://img.shields.io/badge/Qt-PySide6-41CD52?logo=qt&logoColor=white" alt="Qt - PySide6" />
-  <img src="https://img.shields.io/badge/License-MIT-green.svg" alt="MIT License" />
-  <img src="https://img.shields.io/badge/Status-Active-success" alt="Status active" />
+[![Python](https://img.shields.io/badge/Python-3-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![PySide6](https://img.shields.io/badge/GUI-PySide6-41CD52?logo=qt&logoColor=white)](https://doc.qt.io/qtforpython-6/)
+[![Licencia MIT](https://img.shields.io/badge/Licencia-MIT-green.svg)](LICENSE)
 
-</div>
+Repositorio: [github.com/jasonmm24/MatPyLab](https://github.com/jasonmm24/MatPyLab)
 
-MatPyLab es un entorno de programación científica y académica inspirado en MATLAB, pero construido sobre Python y librerías modernas de cómputo científico, visualización y aprendizaje automático.
+## Características
 
-Está pensado para personas que quieren trabajar en análisis numérico, procesamiento de señales, visión por computadora, control, estadística y prototipado rápido con una experiencia de interfaz similar a un IDE de cálculo técnico.
+- Consola interactiva y editor con pestañas para scripts Python y archivos `.m`.
+- Ejecución de comandos, scripts y selecciones en un hilo de trabajo, con opción de detener la ejecución.
+- Depuración básica mediante puntos de interrupción, continuación y ejecución paso a paso.
+- Workspace inspeccionable y editable para variables escalares y arreglos numéricos de hasta dos dimensiones.
+- Gráficas Matplotlib integradas en la ventana y paneles acoplables.
+- Importación y exportación del workspace en formatos MATLAB `.mat` y NumPy `.npz`.
+- Toolboxes opcionales que incorporan funciones al workspace.
+- Visualizador de datos seriales en tiempo real.
 
-Repositorio oficial: https://github.com/jasonmm24/MatPyLab.git
+## Alcance de la sintaxis MATLAB
 
-## ¿Qué es MatPyLab?
+MatPyLab ejecuta Python. El motor aplica una traducción limitada para matrices numéricas sencillas, operadores elemento a elemento (`.^`, `.*`, `./`), comentarios `%`, `grid on/off`, `hold on/off` y el comando `help nombre`. Los archivos `.m` se pueden abrir y guardar, pero no se interpretan mediante un runtime MATLAB ni se admite el lenguaje MATLAB completo. La ejecución de scripts usa `exec`; ejecuta únicamente código de fuentes confiables.
 
-MatPyLab combina:
+## Requisitos
 
-- una interfaz gráfica tipo IDE con PySide6,
-- una consola interactiva estilo MATLAB,
-- un motor de ejecución basado en Python,
-- soporte para scripts y comandos rápidos,
-- extensibilidad mediante toolboxes modulares.
+- Una versión de Python compatible con las dependencias instaladas. El proyecto no declara actualmente una versión mínima en sus metadatos.
+- pip y un entorno de escritorio compatible con PySide6/Qt.
+- Las dependencias base de [requirements.txt](requirements.txt).
 
-La idea principal es ofrecer un entorno accesible para trabajo científico sin abandonar el ecosistema Python.
+Los toolboxes avanzados requieren dependencias adicionales. Consulta [requirements-extras.txt](requirements-extras.txt); el toolbox de aprendizaje profundo también requiere instalar PyTorch por separado. Las librerías específicas solo son necesarias cuando se carga el toolbox que las importa.
 
-## ✨ Características principales
-
-- Consola interactiva con sintaxis similar a MATLAB
-- Editor de scripts y panel de trabajo visual
-- Explorador de archivos y gestión del espacio de trabajo
-- Integración con NumPy, Matplotlib, SciPy, OpenCV y más
-- Soporte para visualización de gráficos y datos seriales
-- Sistema modular de toolboxes para ampliar funcionalidades
-- Compatibilidad con tareas de ingeniería, ciencia de datos e investigación
-
-## 🧠 Arquitectura del proyecto
-
-```text
-MatPyLab/
-├── core/
-│   ├── config_manager.py
-│   ├── execution_engine.py
-│   └── toolbox_manager.py
-├── gui/
-│   ├── custom_widgets.py
-│   ├── main_window.py
-│   ├── serial_plotter.py
-│   ├── syntax_highlighter.py
-│   ├── variable_editor.py
-│   ├── variable_inspector.py
-│   └── widgets/
-├── toolboxes/
-│   ├── README_TOOLBOXES.md
-│   ├── tb_control_system.py
-│   ├── tb_curve_fitting.py
-│   ├── tb_deep_learning.py
-│   ├── tb_image_processing.py
-│   ├── tb_matlab_coder.py
-│   ├── tb_parallel_computing.py
-│   ├── tb_serial.py
-│   ├── tb_signal_processing.py
-│   └── tb_stats_ml.py
-├── config.json
-├── LICENSE
-├── main.py
-├── README.md
-├── requirements.txt
-└── .gitignore
-```
-
-### Core
-La carpeta `core/` contiene la lógica principal de ejecución:
-
-- `execution_engine.py`: motor del entorno, evaluación de expresiones y ejecución de scripts.
-- `toolbox_manager.py`: carga y registro de módulos funcionales.
-- `config_manager.py`: gestión de configuración de la aplicación.
-
-### GUI
-La carpeta `gui/` concentra la interfaz visual:
-
-- ventana principal,
-- widgets personalizados,
-- editor de código,
-- consola interactiva,
-- panel de variables,
-- trazado de gráficos y datos seriales.
-
-### Toolboxes
-Los toolboxes son extensiones modulares que agregan funciones sin modificar el núcleo del sistema. Cada toolbox define funciones que se incorporan al entorno del usuario y pueden usarse directamente desde la consola.
-
-Ejemplos incluidos:
-
-- control automático
-- procesamiento de imágenes
-- análisis de señales
-- estadísticas y machine learning
-- ajuste de curvas
-- serial y adquisición de datos
-- cómputo paralelo
-
-## 🚀 Requisitos
-
-- Python 3.10 o superior
-- pip
-- entorno compatible con PySide6 / Qt
-
-## ⚙️ Instalación
-
-Clona el repositorio e instala las dependencias:
+## Instalación y ejecución
 
 ```bash
 git clone https://github.com/jasonmm24/MatPyLab.git
 cd MatPyLab
 python -m venv .venv
-source .venv/bin/activate  # Linux/macOS
-pip install -r requirements.txt
-```
-
-En Windows, usa:
-
-```bash
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
-```
-
-## ▶️ Ejecutar la aplicación
-
-Desde la raíz del proyecto:
-
-```bash
+source .venv/bin/activate
+python -m pip install -r requirements.txt
 python main.py
 ```
 
-## 🔧 Cómo cargar toolboxes
+En Windows, activa el entorno con `.venv\Scripts\activate` antes de instalar las dependencias y ejecutar `python main.py`.
 
-MatPyLab incluye un sistema modular de toolboxes en la carpeta `toolboxes/`. Para activarlos desde la interfaz:
+Para habilitar las dependencias de los toolboxes:
 
-1. ejecuta la aplicación con `python main.py`;
-2. en la barra de herramientas verás un botón llamado `Toolboxes`;
-3. haz clic en ese botón y selecciona el toolbox que quieras cargar;
-4. las funciones exportadas por ese toolbox quedan disponibles en el workspace para usar en la consola.
+```bash
+python -m pip install -r requirements-extras.txt
+python -m pip install torch
+```
 
-También puedes cargar un toolbox desde código:
+La segunda orden es necesaria para cargar `tb_deep_learning.py`. No instales dependencias opcionales si no vas a usar sus toolboxes.
+
+## Uso de la consola
+
+Las funciones incluidas en el motor están disponibles al iniciar. Por ejemplo:
+
+```python
+A = [1 2; 3 4]
+B = A.^2
+plot(B)
+```
+
+Las funciones de toolbox no están disponibles hasta cargar la extensión. En la aplicación, usa el menú **Toolboxes**. También se pueden cargar desde Python:
 
 ```python
 from core.execution_engine import ExecutionEngine
 
 engine = ExecutionEngine()
-engine.toolbox_manager.load_toolbox("tb_image_processing")
+ok, message = engine.toolbox_manager.load_toolbox("tb_control_system")
+if ok:
+    result, error = engine.execute_command("G = tf([1], [1, 2, 1])")
 ```
 
-Cuando el toolbox se carga correctamente, sus funciones se agregan al entorno global, por ejemplo:
+Un toolbox que depende de un paquete no instalado no podrá cargarse. Cada módulo documenta sus funciones en sus docstrings; los nombres exportados están enumerados más abajo.
 
-```python
-img = imread('foto.jpg')
-imshow(img)
+## Toolboxes incluidos
+
+| Archivo | Funciones exportadas | Dependencia específica |
+| --- | --- | --- |
+| `tb_control_system.py` | `tf`, `step`, `bode`, `feedback`, `pid`, `rlocus` | `control` |
+| `tb_curve_fitting.py` | `polyfit`, `polyval`, `interp1` | SciPy |
+| `tb_deep_learning.py` | `feedforwardnet`, `trainNetwork`, `predict` | PyTorch |
+| `tb_image_processing.py` | `imread`, `imshow`, `rgb2gray`, `imbinarize` | OpenCV |
+| `tb_matlab_coder.py` | `codegen` | Ninguna adicional |
+| `tb_parallel_computing.py` | `parpool`, `parfor` | joblib |
+| `tb_serial.py` | `serialport`, `write`, `readline`, `clear` | pyserial |
+| `tb_signal_processing.py` | `butter`, `filtfilt`, `fft` | SciPy |
+| `tb_stats_ml.py` | `fitlm`, `kmeans`, `pca` | scikit-learn |
+
+La carga y el diseño de extensiones se describen en [toolboxes/README_TOOLBOXES.md](toolboxes/README_TOOLBOXES.md). `codegen` genera archivos fuente C, un encabezado y un Makefile; no transpila automáticamente código Python o MATLAB.
+
+## Pruebas
+
+Las dependencias de desarrollo incluyen Pytest. Instálalas y ejecuta la suite desde la raíz:
+
+```bash
+python -m pip install -r requirements-dev.txt
+python -m pytest
 ```
 
-> Importante: los archivos deben estar dentro de la carpeta `toolboxes/` y deben definir una clase que herede de `MatpyLabToolbox` y exponga `export_functions()`.
+La suite actual cubre el motor de ejecución, las operaciones básicas, la disponibilidad de NumPy, los errores y la limpieza del workspace.
 
-## 🧪 Ejemplos de uso
+## Estructura del proyecto
 
-### Comandos simples
-
-```python
-x = [1 2 3 4 5]
-y = x.^2
-plot(x, y)
-
-A = [1 2; 3 4]
-size(A, 1)
+```text
+MatPyLab/
+├── core/                     Motor, configuración y carga de toolboxes
+├── gui/                      Ventana, editores, visualización y widgets
+│   └── widgets/               Widgets adicionales de la interfaz
+├── tests/                    Pruebas automatizadas
+├── toolboxes/                Extensiones científicas opcionales
+├── config.json               Preferencias de usuario
+├── main.py                   Punto de entrada
+├── requirements.txt          Dependencias base
+├── requirements-dev.txt      Dependencias de desarrollo y pruebas
+├── requirements-extras.txt   Dependencias opcionales de toolboxes
+├── LICENSE                   Licencia MIT
+└── README.md                 Documentación del proyecto
 ```
 
-### Uso de un toolbox
+## Catálogo de módulos
 
-```python
-G = tf([1], [1, 2, 1])
-step(G)
-```
+### Aplicación
 
-### Procesamiento de imágenes
+- [main.py](main.py): inicializa Qt, crea la ventana principal y arranca el bucle de eventos.
+- [core/config_manager.py](core/config_manager.py): lee y guarda `config.json`; completa las claves ausentes con valores predeterminados.
+- [core/execution_engine.py](core/execution_engine.py): crea el workspace, registra funciones de NumPy y Matplotlib, traduce la sintaxis admitida, ejecuta comandos y scripts, y limpia variables de usuario. También conserva un cargador legado de toolboxes basados en carpetas.
+- [core/toolbox_manager.py](core/toolbox_manager.py): define la clase base `MatpyLabToolbox` y carga módulos de toolbox basados en clases; incorpora sus funciones exportadas al workspace.
+- [gui/main_window.py](gui/main_window.py): implementa la ventana, consola, editor por pestañas, explorador de archivos, panel de variables, gráficas, importación y exportación de workspaces, acciones de ejecución y depuración, y el menú actual de toolboxes.
+- [gui/custom_widgets.py](gui/custom_widgets.py): proporciona entrada de consola con historial y un editor con números de línea, autocompletado y puntos de interrupción.
+- [gui/serial_plotter.py](gui/serial_plotter.py): ofrece una ventana independiente para leer valores numéricos de un puerto serie y graficarlos en tiempo real.
+- [gui/syntax_highlighter.py](gui/syntax_highlighter.py): aplica resaltado de sintaxis al editor y permite cambiar entre paletas clara y oscura.
+- [gui/variable_editor.py](gui/variable_editor.py): permite editar valores escalares y arreglos numéricos de hasta dos dimensiones.
+- [gui/variable_inspector.py](gui/variable_inspector.py): presenta variables en una tabla de solo lectura; para arreglos de más de dos dimensiones muestra la primera capa.
+- `core/__init__.py`, `gui/__init__.py` y `toolboxes/__init__.py`: marcadores de paquete Python sin lógica adicional.
+- `gui/widgets/__init__.py`: marcador del subpaquete de widgets.
+- `gui/widgets/command_window.py`: archivo reservado, actualmente vacío; la consola activa está implementada en `gui/main_window.py`.
 
-```python
-img = imread('foto.jpg')
-imshow(img)
-```
+### Extensiones
 
-## 🧩 Cómo crear un toolbox
+- [toolboxes/tb_control_system.py](toolboxes/tb_control_system.py): funciones de transferencia, respuesta al escalón, diagramas de Bode, realimentación, control PID y lugar de raíces.
+- [toolboxes/tb_curve_fitting.py](toolboxes/tb_curve_fitting.py): ajuste polinomial, evaluación de polinomios e interpolación unidimensional.
+- [toolboxes/tb_deep_learning.py](toolboxes/tb_deep_learning.py): creación de redes MLP, entrenamiento con PyTorch y predicción.
+- [toolboxes/tb_image_processing.py](toolboxes/tb_image_processing.py): lectura, visualización, conversión a escala de grises y binarización de imágenes.
+- [toolboxes/tb_matlab_coder.py](toolboxes/tb_matlab_coder.py): genera los archivos C, header y Makefile a partir de una firma y una expresión proporcionadas.
+- [toolboxes/tb_parallel_computing.py](toolboxes/tb_parallel_computing.py): consulta el número de procesadores y ejecuta funciones en paralelo con joblib.
+- [toolboxes/tb_serial.py](toolboxes/tb_serial.py): abre puertos serie y ofrece operaciones de escritura, lectura de líneas y cierre.
+- [toolboxes/tb_signal_processing.py](toolboxes/tb_signal_processing.py): diseña filtros Butterworth, filtra señales y calcula la FFT unidimensional.
+- [toolboxes/tb_stats_ml.py](toolboxes/tb_stats_ml.py): regresión lineal, agrupamiento K-Means y análisis de componentes principales.
+- [toolboxes/README_TOOLBOXES.md](toolboxes/README_TOOLBOXES.md): instrucciones para implementar y cargar toolboxes.
 
-Puedes crear un archivo nuevo dentro de `toolboxes/` y definir una clase que herede de `MatpyLabToolbox`.
+### Pruebas y configuración
 
-```python
-from core.toolbox_manager import MatpyLabToolbox
+- [tests/test_engine.py](tests/test_engine.py): pruebas de regresión del motor de ejecución.
+- [config.json](config.json): tema y última carpeta seleccionada. Si no existe o no se puede leer, la aplicación utiliza valores predeterminados.
+- [requirements.txt](requirements.txt), [requirements-dev.txt](requirements-dev.txt) y [requirements-extras.txt](requirements-extras.txt): dependencias base, de desarrollo y opcionales.
+- [.gitignore](.gitignore): excluye cachés de Python, entornos virtuales y archivos locales de Qt y VS Code.
+- [LICENSE](LICENSE): términos de distribución MIT.
 
-class MiToolbox(MatpyLabToolbox):
-    @property
-    def name(self):
-        return "Mi Toolbox"
+## Contribuciones y licencia
 
-    @property
-    def description(self):
-        return "Descripción del toolbox"
+Las contribuciones pueden proponerse mediante pull requests. Para cambios funcionales, incluye pruebas y actualiza la documentación afectada.
 
-    def export_functions(self):
-        def saludar(nombre="Mundo"):
-            print(f"Hola {nombre}!")
-
-        return {"saludar": saludar}
-```
-
-Esto permite que la aplicación registre automáticamente las nuevas funciones para que puedan usarse desde la consola o sobre el workspace.
-
-## 📌 Estado del proyecto
-
-MatPyLab se encuentra en desarrollo activo y está orientado a ofrecer una experiencia práctica y educativa de programación científica, con énfasis en extensibilidad y prototipado rápido.
-
-## 🤝 Contribución
-
-Las contribuciones son bienvenidas. Si quieres colaborar:
-
-1. haz un fork del proyecto,
-2. crea una rama para tu cambio,
-3. realiza tus mejoras o nuevos toolboxes,
-4. abre un pull request con una descripción clara.
-
-## 📄 Licencia
-
-Este proyecto está bajo la licencia MIT. Consulta el archivo [LICENSE](LICENSE) para más detalles.
-
----
-
-Hecho para entornos científicos, educativos y de investigación que buscan una experiencia similar a MATLAB, pero con la flexibilidad del ecosistema Python.
+MatPyLab se distribuye bajo la licencia MIT. Consulta [LICENSE](LICENSE) para ver el texto completo.

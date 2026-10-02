@@ -20,10 +20,10 @@ class SerialToolbox(MatpyLabToolbox):
             """
             try:
                 s = serial.Serial(port, baudrate, timeout=1)
-                print(f"🔌 Conectado exitosamente al puerto {port} a {baudrate} baudios.")
+                print(f"Conectado al puerto {port} a {baudrate} baudios.")
                 return s
             except Exception as e:
-                print(f"❌ Error al conectar con {port}: {e}")
+                print(f"Error al conectar con {port}: {e}")
                 return None
 
         def matlab_write(s, data, tipo='string'):
@@ -32,7 +32,7 @@ class SerialToolbox(MatpyLabToolbox):
             Uso: write(s, "Hola Arduino") o write(s, [255, 0, 128, 255], 'uint8')
             """
             if s is None or not s.is_open:
-                print("❌ El puerto serie no está abierto.")
+                print("El puerto serie no está abierto.")
                 return
 
             if tipo == 'string':
@@ -63,7 +63,7 @@ class SerialToolbox(MatpyLabToolbox):
             if s is not None and s.is_open:
                 s.flush()
                 s.close()
-                print("🔌 Puerto serie cerrado y liberado.")
+                print("Puerto serie cerrado y liberado.")
 
         return {
             'serialport': matlab_serialport,

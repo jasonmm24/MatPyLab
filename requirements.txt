@@ -1,18 +1,5 @@
-# Dependencias principales de MatPyLab.
-#
-# PySide6: proporciona la interfaz gráfica de usuario (Qt) para la ventana,
-# dock widgets, editor, consola y componentes visuales de la aplicación.
-PySide6>=6.5.0
-# numpy: base numérica del entorno, usada para matrices, cálculos científicos y
-# operaciones vectorizadas dentro del motor de ejecución.
-numpy>=1.24.0
-# matplotlib: permite graficación y visualización de resultados en modo interactivo.
-matplotlib>=3.7.0
-pyserial>=3.5
+PySide6>=6.0.0
+numpy>=1.21.0
+matplotlib>=3.4.0
 pyqtgraph>=0.13.0
-control>=0.9.0
-scikit-learn>=1.3.0
-torch>=2.0.0
-scipy>=1.11.0
-joblib>=1.3.0
-opencv-python>=4.8.0
+scipy>=1.7.0

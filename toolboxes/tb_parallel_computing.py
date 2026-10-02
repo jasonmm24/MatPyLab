@@ -19,7 +19,7 @@ class ParallelComputingToolbox(MatpyLabToolbox):
             Uso: cores = parpool()
             """
             cores = multiprocessing.cpu_count()
-            print(f"🚀 Pool paralelo detectado: {cores} núcleos físicos/lógicos disponibles.")
+            print(f"Pool paralelo detectado: {cores} núcleos disponibles.")
             return cores
 
         def matlab_parfor(func, iterable, n_jobs=-1):
@@ -27,7 +27,7 @@ class ParallelComputingToolbox(MatpyLabToolbox):
             Ejecuta un bucle en paralelo.
             Uso: resultados = parfor(mi_funcion, lista_datos)
             """
-            print("⚡ Ejecutando parfor en paralelo repartiendo carga...")
+            print("Ejecutando parfor en paralelo.")
             resultados = Parallel(n_jobs=n_jobs)(delayed(func)(item) for item in iterable)
             return resultados
 

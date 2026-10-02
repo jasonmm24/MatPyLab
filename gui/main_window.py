@@ -13,16 +13,18 @@ La aplicación conecta la GUI con el motor de ejecución a través de
 import sys
 import os
 import re
-import pickle
 import types
 import threading
 from pathlib import Path
+import numpy as np
 import matplotlib
 matplotlib.use('qtagg')  # Forzar a Matplotlib a usar el backend de Qt
+from scipy.io import savemat, loadmat
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
 from matplotlib.figure import Figure
 from PySide6.QtWidgets import (QMainWindow, QDockWidget, QTextEdit, QTableWidget,
-                               QWidget, QVBoxLayout, QTableWidgetItem,
+                               QWidget, QVBoxLayout, QHBoxLayout, QGroupBox,
+                               QTableWidgetItem,
                                QToolBar, QTreeView, QFileSystemModel, QFileDialog,
                                QDialog, QListWidget, QDialogButtonBox, QCompleter,
                                QToolTip, QStyle, QTabWidget, QMessageBox)
@@ -37,7 +39,6 @@ from gui.syntax_highlighter import PythonHighlighter
 from gui.custom_widgets import CodeEditor, ConsoleInput
 from gui.variable_inspector import VariableInspector
 from gui.variable_editor import VariableEditorDialog
-from gui.serial_plotter import SerialPlotterWindow
 
 
 class ExecutionCancelled(BaseException):
@@ -252,7 +253,7 @@ class ToolboxManager(QDialog):
             for carpeta in sorted(os.listdir(ruta_toolboxes)):
                 ruta_carpeta = os.path.join(ruta_toolboxes, carpeta)
                 if os.path.isdir(ruta_carpeta) and not carpeta.startswith("__"):
-                    item = QListWidgetItem(f"📦 {carpeta}")
+                    item = QListWidgetItem(carpeta)
                     item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
 
                     if carpeta in self.engine.toolboxes_cargados:
@@ -299,7 +300,12 @@ class MatpyLabWindow(QMainWindow):
             QTabBar::tab { background: #2b2b2b; color: #888888; padding: 8px 15px; border-right: 1px solid #3c3f41; }
             QTabBar::tab:selected { background: #1e1e1e; color: #ffffff; font-weight: bold; border-top: 2px solid #00BFFF; }
         """)
-        self.setCentralWidget(self.tabs)
+        self.central_widget = QWidget(self)
+        self.central_layout = QVBoxLayout(self.central_widget)
+        self.central_layout.setContentsMargins(0, 0, 0, 0)
+        self.central_layout.setSpacing(0)
+        self.central_layout.addWidget(self.tabs)
+        self.setCentralWidget(self.central_widget)
 
         self.setup_command_window()
 
@@ -387,7 +393,7 @@ class MatpyLabWindow(QMainWindow):
         self.dock_workspace.setWidget(self.workspace_table)
 
     def setup_plots_dock(self):
-        self.dock_plots = QDockWidget("📈 Plots", self)
+        self.dock_plots = QDockWidget("Plots", self)
         self.dock_plots.setAllowedAreas(Qt.RightDockWidgetArea | Qt.BottomDockWidgetArea)
 
         container = QWidget()
@@ -396,9 +402,9 @@ class MatpyLabWindow(QMainWindow):
 
         self.figure = Figure()
         self.canvas = FigureCanvasQTAgg(self.figure)
-        self.toolbar = NavigationToolbar2QT(self.canvas, self)
+        plot_toolbar = NavigationToolbar2QT(self.canvas, self)
 
-        layout.addWidget(self.toolbar)
+        layout.addWidget(plot_toolbar)
         layout.addWidget(self.canvas)
         self.dock_plots.setWidget(container)
         self.addDockWidget(Qt.RightDockWidgetArea, self.dock_plots)
@@ -582,7 +588,6 @@ class MatpyLabWindow(QMainWindow):
         for row, (nombre, valor) in enumerate(variables.items()):
             self.workspace_table.setItem(row, 0, QTableWidgetItem(nombre))
 
-            # Limpieza visual para la columna "Value"
             clase_nombre = type(valor).__name__
             if clase_nombre == 'TransferFunction':
                 str_valor = "[Función de Transferencia]"
@@ -606,39 +611,58 @@ class MatpyLabWindow(QMainWindow):
         self.canvas.draw()
 
     def guardar_workspace(self):
-        """Guarda las variables serializables del usuario en un archivo pickle."""
-        file_path, _ = QFileDialog.getSaveFileName(
+        """Exporta datos numéricos y de texto como archivo MATLAB o NumPy."""
+        file_path, selected_filter = QFileDialog.getSaveFileName(
             self,
-            "Guardar Workspace",
+            "Guardar Workspace Científico",
             "",
-            "Archivos de Workspace (*.pkl);;Todos los archivos (*)",
+            "MATLAB Data (*.mat);;NumPy Compressed (*.npz);;Todos los archivos (*)",
         )
         if not file_path:
             return
-        if not file_path.lower().endswith(".pkl"):
-            file_path += ".pkl"
+
+        guardar_npz = "NumPy" in selected_filter or file_path.lower().endswith(".npz")
+        extension = ".npz" if guardar_npz else ".mat"
+        if not file_path.lower().endswith(extension):
+            file_path = os.path.splitext(file_path)[0] + extension
 
         datos_a_guardar = {}
         for key, value in self.engine.workspace_globals.items():
             if (
                 not isinstance(key, str)
-                or key.startswith("__")
+                or not key.isidentifier()
+                or key.startswith("_")
+                or len(key) > 63
                 or key in self.engine.system_keys
                 or isinstance(value, types.ModuleType)
                 or callable(value)
             ):
                 continue
             try:
-                pickle.dumps(value)
-                datos_a_guardar[key] = value
-            except Exception as error:
+                if isinstance(value, (bool, int, float, complex, str, np.number)):
+                    export_value = value
+                    array_value = np.asarray(value)
+                elif isinstance(value, (list, tuple, np.ndarray)):
+                    array_value = np.asarray(value)
+                    if array_value.dtype.kind not in "biufcSU":
+                        raise TypeError("solo se admiten datos numéricos o de texto")
+                    export_value = array_value
+                else:
+                    raise TypeError("tipo no admitido")
+
+                if array_value.dtype.kind not in "biufcSU":
+                    raise TypeError("solo se admiten datos numéricos o de texto")
+                datos_a_guardar[key] = export_value
+            except (TypeError, ValueError) as error:
                 self.escribir_en_consola(
-                    f"Variable '{key}' ignorada (tipo {type(value).__name__} no serializable): {error}\n"
+                    f"Variable '{key}' ignorada (tipo {type(value).__name__} no compatible): {error}\n"
                 )
 
         try:
-            with open(file_path, "wb") as workspace_file:
-                pickle.dump(datos_a_guardar, workspace_file)
+            if guardar_npz:
+                np.savez_compressed(file_path, **datos_a_guardar)
+            else:
+                savemat(file_path, datos_a_guardar)
             self.escribir_en_consola(
                 f"Workspace guardado con éxito en: {file_path}\n"
             )
@@ -650,41 +674,45 @@ class MatpyLabWindow(QMainWindow):
             )
 
     def cargar_workspace(self):
-        """Carga variables de un archivo pickle confiable en el motor."""
+        """Carga variables de archivos MATLAB o NumPy sin deserializar objetos."""
         file_path, _ = QFileDialog.getOpenFileName(
             self,
-            "Cargar Workspace",
+            "Cargar Workspace Científico",
             "",
-            "Archivos de Workspace (*.pkl);;Todos los archivos (*)",
+            "Archivos de Datos (*.mat *.npz);;MATLAB Data (*.mat);;NumPy Compressed (*.npz);;Todos los archivos (*)",
         )
         if not file_path:
             return
 
-        confirmacion = QMessageBox.warning(
-            self,
-            "Cargar Workspace",
-            "Los archivos pickle pueden ejecutar código al abrirse. "
-            "Carga únicamente archivos de confianza. ¿Deseas continuar?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
-        )
-        if confirmacion != QMessageBox.Yes:
-            return
-
         try:
-            with open(file_path, "rb") as workspace_file:
-                datos_cargados = pickle.load(workspace_file)
-            if not isinstance(datos_cargados, dict):
-                raise ValueError("El archivo no contiene un Workspace válido.")
+            extension = os.path.splitext(file_path)[1].lower()
+            if extension == ".mat":
+                raw_mat = loadmat(file_path, mat_dtype=True, simplify_cells=True)
+                datos_cargados = {
+                    key: value
+                    for key, value in raw_mat.items()
+                    if not key.startswith("__")
+                }
+            elif extension == ".npz":
+                with np.load(file_path, allow_pickle=False) as data:
+                    datos_cargados = {key: data[key] for key in data.files}
+            else:
+                raise ValueError("El formato debe ser .mat o .npz.")
 
             for key, value in datos_cargados.items():
                 if (
                     not isinstance(key, str)
-                    or key.startswith("__")
+                    or not key.isidentifier()
+                    or key.startswith("_")
+                    or len(key) > 63
                     or key in self.engine.system_keys
-                    or isinstance(value, types.ModuleType)
-                    or callable(value)
                 ):
+                    continue
+                try:
+                    array_value = np.asarray(value)
+                except (TypeError, ValueError):
+                    continue
+                if array_value.dtype.kind not in "biufcSU":
                     continue
                 self.engine.workspace_globals[key] = value
 
@@ -753,92 +781,69 @@ class MatpyLabWindow(QMainWindow):
             self.actualizar_workspace()
 
     def setup_toolbar(self):
-        """Configura la barra de herramientas con comandos principales."""
-        toolbar = QToolBar("Barra de Herramientas Principal")
-        toolbar.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
-        toolbar.setIconSize(QSize(24, 24))
-        self.addToolBar(toolbar)
-
+        """Configura una cinta de opciones agrupada por flujo de trabajo."""
         estilo = self.style()
 
         self.theme_action = QAction(estilo.standardIcon(QStyle.SP_DesktopIcon), "Tema", self)
         self.theme_action.triggered.connect(self.toggle_tema)
-        toolbar.addAction(self.theme_action)
 
-        new_action = QAction(estilo.standardIcon(QStyle.SP_FileIcon), "Nuevo", self)
-        new_action.setShortcut("Ctrl+N")
-        new_action.triggered.connect(lambda: self.nuevo_script())
-        toolbar.addAction(new_action)
+        self.action_nuevo = QAction(estilo.standardIcon(QStyle.SP_FileIcon), "Nuevo", self)
+        self.action_nuevo.setShortcut("Ctrl+N")
+        self.action_nuevo.triggered.connect(lambda: self.nuevo_script())
 
-        open_action = QAction(estilo.standardIcon(QStyle.SP_DialogOpenButton), "Abrir", self)
-        open_action.triggered.connect(self.open_folder)
-        toolbar.addAction(open_action)
+        self.action_abrir = QAction(estilo.standardIcon(QStyle.SP_DialogOpenButton), "Carpeta", self)
+        self.action_abrir.triggered.connect(self.open_folder)
 
-        open_script_action = QAction(estilo.standardIcon(QStyle.SP_FileIcon), "Abrir Script", self)
-        open_script_action.setShortcut("Ctrl+O")
-        open_script_action.triggered.connect(self.abrir_dialogo_archivo)
-        toolbar.addAction(open_script_action)
+        self.action_abrir_script = QAction(estilo.standardIcon(QStyle.SP_FileIcon), "Abrir Script", self)
+        self.action_abrir_script.setShortcut("Ctrl+O")
+        self.action_abrir_script.triggered.connect(self.abrir_dialogo_archivo)
 
-        save_action = QAction(estilo.standardIcon(QStyle.SP_DialogSaveButton), "Guardar", self)
-        save_action.setShortcut("Ctrl+S")
-        save_action.triggered.connect(self.guardar_script)
-        toolbar.addAction(save_action)
-
-        toolbar.addSeparator()
+        self.action_guardar = QAction(estilo.standardIcon(QStyle.SP_DialogSaveButton), "Guardar", self)
+        self.action_guardar.setShortcut("Ctrl+S")
+        self.action_guardar.triggered.connect(self.guardar_script)
 
         clear_workspace_act = QAction(estilo.standardIcon(QStyle.SP_TrashIcon), "Clear\nWorkspace", self)
         clear_workspace_act.triggered.connect(self.limpiar_workspace_interfaz)
-        toolbar.addAction(clear_workspace_act)
         self.clear_workspace_action = clear_workspace_act
 
-        save_workspace_action = QAction(estilo.standardIcon(QStyle.SP_DialogSaveButton), "Save\nWorkspace", self)
-        save_workspace_action.triggered.connect(self.guardar_workspace)
-        toolbar.addAction(save_workspace_action)
+        self.save_workspace_action = QAction(estilo.standardIcon(QStyle.SP_DialogSaveButton), "Save\nWorkspace", self)
+        self.save_workspace_action.triggered.connect(self.guardar_workspace)
 
-        load_workspace_action = QAction(estilo.standardIcon(QStyle.SP_DialogOpenButton), "Load\nWorkspace", self)
-        load_workspace_action.triggered.connect(self.cargar_workspace)
-        toolbar.addAction(load_workspace_action)
+        self.load_workspace_action = QAction(estilo.standardIcon(QStyle.SP_DialogOpenButton), "Load\nWorkspace", self)
+        self.load_workspace_action.triggered.connect(self.cargar_workspace)
 
-        toolbar.addSeparator()
+        self.clear_commands_action = QAction(estilo.standardIcon(QStyle.SP_BrowserReload), "Clear\nCommands", self)
+        self.clear_commands_action.triggered.connect(lambda: self.console_output.clear())
 
-        clear_cmd_act = QAction(estilo.standardIcon(QStyle.SP_BrowserReload), "Clear\nCommands", self)
-        clear_cmd_act.triggered.connect(lambda: self.console_output.clear())
-        toolbar.addAction(clear_cmd_act)
+        self.action_run_script = QAction(estilo.standardIcon(QStyle.SP_MediaPlay), "Run Script", self)
+        self.action_run_script.setShortcut("F5")
+        self.action_run_script.triggered.connect(self.ejecutar_script)
+        self.run_action = self.action_run_script
 
-        run_action = QAction(estilo.standardIcon(QStyle.SP_MediaPlay), "Run\nScript", self)
-        run_action.setShortcut("F5")
-        run_action.triggered.connect(self.ejecutar_script)
-        toolbar.addAction(run_action)
-        self.run_action = run_action
+        self.action_run_selection = QAction(estilo.standardIcon(QStyle.SP_MediaSkipForward), "Run Selection", self)
+        self.action_run_selection.setShortcut("F9")
+        self.action_run_selection.triggered.connect(self.ejecutar_seleccion)
+        self.run_selection_action = self.action_run_selection
 
-        run_sel_action = QAction(estilo.standardIcon(QStyle.SP_MediaSkipForward), "Run\nSelection", self)
-        run_sel_action.setShortcut("F9")
-        run_sel_action.triggered.connect(self.ejecutar_seleccion)
-        toolbar.addAction(run_sel_action)
-        self.run_selection_action = run_sel_action
+        self.action_stop = QAction(estilo.standardIcon(QStyle.SP_BrowserStop), "Stop", self)
+        self.action_stop.setEnabled(False)
+        self.action_stop.triggered.connect(self.detener_ejecucion)
+        self.stop_action = self.action_stop
 
-        self.stop_action = QAction(estilo.standardIcon(QStyle.SP_BrowserStop), "Stop", self)
-        self.stop_action.setEnabled(False)
-        self.stop_action.triggered.connect(self.detener_ejecucion)
-        toolbar.addAction(self.stop_action)
+        self.action_continuar = QAction(estilo.standardIcon(QStyle.SP_MediaPlay), "Continuar", self)
+        self.action_continuar.setEnabled(False)
+        self.action_continuar.triggered.connect(self.debugger_continue)
+        self.continue_action = self.action_continuar
 
-        self.continue_action = QAction(estilo.standardIcon(QStyle.SP_MediaPlay), "Continuar", self)
-        self.continue_action.setEnabled(False)
-        self.continue_action.triggered.connect(self.debugger_continue)
-        toolbar.addAction(self.continue_action)
+        self.action_step = QAction(estilo.standardIcon(QStyle.SP_MediaSkipForward), "Paso a Paso", self)
+        self.action_step.setEnabled(False)
+        self.action_step.triggered.connect(self.debugger_step)
+        self.step_action = self.action_step
 
-        self.step_action = QAction(estilo.standardIcon(QStyle.SP_MediaSkipForward), "Paso a Paso", self)
-        self.step_action.setEnabled(False)
-        self.step_action.triggered.connect(self.debugger_step)
-        toolbar.addAction(self.step_action)
-
-        serial_plotter_action = QAction(
+        self.serial_plotter_action = QAction(
             estilo.standardIcon(QStyle.SP_ComputerIcon), "Serial Plotter", self
         )
-        serial_plotter_action.triggered.connect(self.abrir_serial_plotter)
-        toolbar.addAction(serial_plotter_action)
-
-        toolbar.addSeparator()
+        self.serial_plotter_action.triggered.connect(self.abrir_serial_plotter)
 
         toolboxes_btn = QToolButton(self)
         toolboxes_btn.setText("Toolboxes")
@@ -852,7 +857,15 @@ class MatpyLabWindow(QMainWindow):
             def loader():
                 exito, msj = self.engine.toolbox_manager.load_toolbox(modulo)
                 self.escribir_en_consola(f">> {msj}\n")
-                self.actualizar_workspace()
+                if exito:
+                    self.actualizar_workspace()
+                else:
+                    QMessageBox.warning(
+                        self,
+                        "No se pudo cargar el toolbox",
+                        f"{msj}\n\nSi falta una dependencia opcional, instálala con:\n"
+                        "pip install -r requirements-extras.txt",
+                    )
             return loader
 
         def actualizar_menu_toolboxes():
@@ -866,7 +879,7 @@ class MatpyLabWindow(QMainWindow):
                     if not archivo.name.startswith("__"):
                         modulo = archivo.stem
                         if modulo not in self.engine.toolbox_manager.loaded_toolboxes:
-                            act = QAction(f"📦 Cargar {modulo}", self)
+                            act = QAction(f"Cargar {modulo}", self)
                             act.triggered.connect(generar_loader(modulo))
                             self.toolbox_menu.addAction(act)
                             toolboxes_encontrados += 1
@@ -878,16 +891,104 @@ class MatpyLabWindow(QMainWindow):
 
             self.toolbox_menu.addSeparator()
 
-            act_crear = QAction("➕ Crear nuevo Toolbox (Plantilla)...", self)
+            act_crear = QAction("Crear nuevo Toolbox (Plantilla)...", self)
             act_crear.triggered.connect(self.crear_plantilla_toolbox)
             self.toolbox_menu.addAction(act_crear)
 
         self.toolbox_menu.aboutToShow.connect(actualizar_menu_toolboxes)
         toolboxes_btn.setMenu(self.toolbox_menu)
-        toolbar.addWidget(toolboxes_btn)
         self.toolboxes_button = toolboxes_btn
 
+        self.action_clear_workspace = self.clear_workspace_action
+        self.action_save_workspace = self.save_workspace_action
+        self.action_load_workspace = self.load_workspace_action
+        self.action_clear_commands = self.clear_commands_action
+        self.action_serial_plotter = self.serial_plotter_action
+
+        self.ribbon = QTabWidget()
+        self.ribbon.setFixedHeight(120)
+        self.ribbon.setStyleSheet("""
+            QTabWidget::pane { border: none; background-color: #2b2b2b; }
+            QTabBar::tab { background: #3a3a3a; color: #cccccc; padding: 6px 20px; margin-right: 2px; }
+            QTabBar::tab:selected { background: #2b2b2b; color: #ffffff; font-weight: bold; border-bottom: 2px solid #007acc; }
+            QGroupBox { color: #888888; font-size: 10px; border: 1px solid #3a3a3a; border-radius: 4px; margin-top: 12px; }
+            QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top center; padding: 0 3px; }
+            QToolBar { background: transparent; border: none; }
+            QToolButton { color: #ffffff; font-size: 11px; padding: 2px; }
+            QToolButton:hover { background-color: #3a3a3a; border-radius: 4px; }
+        """)
+
+        tab_inicio = QWidget()
+        layout_inicio = QHBoxLayout(tab_inicio)
+        layout_inicio.setContentsMargins(5, 10, 5, 0)
+        layout_inicio.setSpacing(8)
+
+        def crear_grupo(titulo, acciones, widgets=()):
+            grupo = QGroupBox(titulo)
+            layout_grupo = QVBoxLayout(grupo)
+            layout_grupo.setContentsMargins(0, 0, 0, 0)
+            barra = QToolBar()
+            barra.setIconSize(QSize(32, 32))
+            barra.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
+            barra.setMovable(False)
+            barra.setStyleSheet("QToolBar { border: none; }")
+            for accion in acciones:
+                if accion is None:
+                    barra.addSeparator()
+                else:
+                    barra.addAction(accion)
+            for widget in widgets:
+                barra.addWidget(widget)
+            layout_grupo.addWidget(barra)
+            layout_inicio.addWidget(grupo)
+            return grupo
+
+        self.ribbon_group_file = crear_grupo(
+            "Archivo",
+            [self.action_nuevo, self.action_abrir, self.action_abrir_script, self.action_guardar],
+        )
+        self.ribbon_group_execution = crear_grupo(
+            "Ejecución",
+            [
+                self.action_run_script,
+                self.action_run_selection,
+                self.action_stop,
+                self.action_continuar,
+                self.action_step,
+            ],
+        )
+        self.ribbon_group_environment = crear_grupo(
+            "Entorno",
+            [
+                self.theme_action,
+                self.action_clear_workspace,
+                self.action_save_workspace,
+                self.action_load_workspace,
+                None,
+                self.action_clear_commands,
+                None,
+                self.action_serial_plotter,
+            ],
+            [self.toolboxes_button],
+        )
+        layout_inicio.addStretch(1)
+        self.ribbon.addTab(tab_inicio, "Inicio")
+        self.setMenuWidget(self.ribbon)
+
     def abrir_serial_plotter(self):
+        """Abre el Serial Plotter y comprueba sus dependencias bajo demanda."""
+        try:
+            from gui.serial_plotter import SerialPlotterWindow
+            import serial  # noqa: F401
+        except ImportError:
+            QMessageBox.warning(
+                self,
+                "Dependencia faltante",
+                "El Serial Plotter requiere la librería 'pyserial'.\n\n"
+                "Instálala con:\npip install pyserial",
+            )
+            return
+
         if self.plotter_window is None:
             self.plotter_window = SerialPlotterWindow(self)
         self.plotter_window.show()
@@ -1079,7 +1180,6 @@ class MiToolboxPersonalizado(MatpyLabToolbox):
         return "Un toolbox de prueba creado por la comunidad."
         
     def export_functions(self):
-        # 1. Define tus funciones personalizadas aquí
         def saludar(nombre="Mundo"):
             """Imprime un saludo en la consola."""
             print(f"¡Hola {nombre} desde tu nuevo Toolbox!")
@@ -1088,7 +1188,6 @@ class MiToolboxPersonalizado(MatpyLabToolbox):
             """Calcula el cuadrado del valor y le suma 42."""
             return (x ** 2) + 42
 
-        # 2. Devuelve el diccionario de funciones a inyectar en el Workspace
         return {
             'saludar': saludar,
             'magia': calcular_magia

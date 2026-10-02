@@ -1,62 +1,55 @@
-# Toolboxes de MatpyLab
+# Desarrollo de toolboxes
 
-Los toolboxes son extensiones modulares que agregan nuevas capacidades al entorno de ejecución de MatpyLab sin modificar el núcleo del programa. Permiten emular la experiencia de los toolboxes oficiales de MATLAB y crear paquetes personalizados para hardware, visión, control, etc.
+Los toolboxes amplían el workspace de MatPyLab con funciones científicas o de ingeniería. La interfaz carga módulos Python ubicados directamente en `toolboxes/`; cada módulo debe definir una clase que herede de `MatpyLabToolbox`.
 
-## Nueva Arquitectura (v0.2+)
+## Crear una extensión
 
-A partir de la versión 0.2, MatpyLab utiliza un sistema basado en clases gestionado por el `ToolboxManager` para cargar módulos de manera dinámica. Atrás quedó la antigua estructura de carpetas con `toolbox_init.py`.
+1. Crea un archivo Python en `toolboxes/`, por ejemplo `tb_mi_modulo.py`.
+2. Importa la clase base desde `core.toolbox_manager`.
+3. Implementa las propiedades `name` y `description`.
+4. Implementa `export_functions()` y devuelve un diccionario que relacione los nombres disponibles en el workspace con sus funciones.
+5. Instala y documenta las dependencias externas que el módulo importe.
 
-Ahora, un toolbox es simplemente un archivo Python (`.py`) dentro de la carpeta `toolboxes/` que contiene una clase que hereda de `MatpyLabToolbox`.
-
-## Estructura del Directorio
-
-```text
-toolboxes/
-├── tb_control_system.py
-├── tb_image_processing.py
-├── tb_serial.py
-└── README_TOOLBOXES.md
-```
-
-## Cómo crear un nuevo Toolbox
-Para que MatpyLab reconozca un toolbox automáticamente en el menú dinámico de la interfaz, debes seguir estas 5 reglas:
-
-1. **Crear un archivo `.py`** en la carpeta `toolboxes/` (ej. `tb_mi_modulo.py`).
-2. **Importar la clase base:** `from core.toolbox_manager import MatpyLabToolbox`.
-3. **Crear una clase** que herede de `MatpyLabToolbox`.
-4. **Definir las propiedades** `name` y `description`.
-5. **Implementar el método `export_functions(self)`** que devuelva un diccionario con las funciones que se inyectarán a la Command Window.
-
-### Plantilla Básica
-Python
-
-```
+```python
 from core.toolbox_manager import MatpyLabToolbox
 
-class MiToolboxPersonalizado(MatpyLabToolbox):
+
+class MiToolbox(MatpyLabToolbox):
     @property
     def name(self):
-        return "Mi Primer Toolbox"
-        
+        return "Mi Toolbox"
+
     @property
     def description(self):
-        return "Descripción de lo que hace el paquete."
-        
-    def export_functions(self):
-        # 1. Definir funciones locales o importar librerías (ej. numpy, cv2)
-        def saludar(nombre="Mundo"):
-            print(f"¡Hola {nombre} desde el nuevo Toolbox!")
+        return "Funciones de ejemplo para MatPyLab."
 
-        # 2. Retornar diccionario de funciones exportadas al Workspace
-        return {
-            'saludar': saludar
-        }
+    def export_functions(self):
+        def saludar(nombre="Mundo"):
+            return f"Hola, {nombre}."
+
+        return {"saludar": saludar}
 ```
 
-## Cómo los carga MatpyLab
-El `ToolboxManager` (ubicado en `core/toolbox_manager.py`) se encarga de:
+## Carga y uso
 
-1. Escanear la carpeta `toolboxes/` en tiempo real.
-2. Listar los archivos `.py` disponibles en el menú superior de la GUI.
-3. Al hacer clic, instanciar la clase y llamar al método `export_functions()`.
-4. Inyectar esas funciones directamente en el `workspace_globals` del motor, permitiendo su uso inmediato en la consola o en scripts `.m`.
+El menú **Toolboxes** de la ventana principal enumera módulos `.py` dentro de `toolboxes/`, omite `__init__.py` e intenta cargar el módulo seleccionado mediante `ToolboxManager`. El gestor localiza una subclase concreta de `MatpyLabToolbox`, crea una instancia, llama a `export_functions()` e incorpora el resultado al workspace.
+
+También se puede cargar una extensión desde código:
+
+```python
+from core.execution_engine import ExecutionEngine
+
+engine = ExecutionEngine()
+loaded, message = engine.toolbox_manager.load_toolbox("tb_mi_modulo")
+if loaded:
+    result, error = engine.execute_command("saludar('MatPyLab')")
+```
+
+Los imports opcionales se resuelven al importar el módulo. Si falta una dependencia, la carga falla y el gestor devuelve el mensaje de error. Añade las dependencias necesarias a `requirements-extras.txt` cuando corresponda.
+
+## Consideraciones
+
+- Los nombres devueltos por `export_functions()` pasan a estar disponibles en el workspace y se consideran funciones del sistema.
+- Evita reutilizar nombres de funciones ya registradas para no sobrescribir herramientas existentes.
+- El motor conserva un método legado para toolboxes organizados como directorios con `toolbox_init.py`; el menú actual utiliza módulos basados en clases. Para extensiones nuevas, usa el formato descrito en esta guía.
+- La ejecución de código de terceros puede modificar el entorno del proceso. Carga únicamente extensiones de confianza.

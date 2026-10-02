@@ -9,6 +9,7 @@ numpy>=1.24.0
 # matplotlib: permite graficación y visualización de resultados en modo interactivo.
 matplotlib>=3.7.0
 pyserial>=3.5
+pyqtgraph>=0.13.0
 control>=0.9.0
 scikit-learn>=1.3.0
 torch>=2.0.0

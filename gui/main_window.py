@@ -13,6 +13,7 @@ La aplicación conecta la GUI con el motor de ejecución a través de
 import sys
 import os
 import re
+import threading
 from pathlib import Path
 import matplotlib
 matplotlib.use('qtagg')  # Forzar a Matplotlib a usar el backend de Qt
@@ -25,12 +26,104 @@ from PySide6.QtWidgets import (QMainWindow, QDockWidget, QTextEdit, QTableWidget
                                QToolTip, QStyle, QTabWidget)
 from PySide6.QtWidgets import QToolButton, QMenu
 from PySide6.QtGui import QAction, QTextCursor
-from PySide6.QtCore import Qt, QObject, Signal, QDir, QStringListModel, QSize
+from PySide6.QtCore import Qt, QObject, QThread, Signal, QStringListModel, QSize
 from core.execution_engine import ExecutionEngine
+from core.config_manager import load_config, save_config
 from PySide6.QtWidgets import QListWidgetItem
 from gui.syntax_highlighter import PythonHighlighter
 from gui.custom_widgets import CodeEditor, ConsoleInput
 from gui.variable_inspector import VariableInspector
+from gui.variable_editor import VariableEditorDialog
+from gui.serial_plotter import SerialPlotterWindow
+
+
+class ExecutionCancelled(BaseException):
+    """Señala una cancelación cooperativa del código ejecutado."""
+
+
+class GuiThreadExecutor(QObject):
+    """Ejecuta operaciones que modifican widgets Qt en el hilo de la GUI."""
+
+    call_requested = Signal(object, object, object)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.call_requested.connect(self._execute, Qt.QueuedConnection)
+
+    def invoke(self, callback):
+        if QThread.currentThread() == self.thread():
+            return callback()
+
+        completed = threading.Event()
+        result = {}
+        self.call_requested.emit(callback, completed, result)
+        while not completed.wait(0.05):
+            if QThread.currentThread().isInterruptionRequested():
+                raise ExecutionCancelled()
+
+        if "error" in result:
+            raise result["error"]
+        return result.get("value")
+
+    def _execute(self, callback, completed, result):
+        try:
+            result["value"] = callback()
+        except Exception as error:
+            result["error"] = error
+        finally:
+            completed.set()
+
+
+class ExecutionWorker(QThread):
+    """Ejecuta un comando o script sin bloquear el hilo de la interfaz."""
+
+    result_ready = Signal(object)
+    error = Signal(str)
+    cancelled = Signal()
+
+    def __init__(self, engine, code, mode="script", parent=None):
+        super().__init__(parent)
+        self.engine = engine
+        self.code = code
+        self.mode = mode
+        self.outcome = "running"
+
+    def run(self):
+        previous_trace = sys.gettrace()
+
+        def check_interruption(frame, event, arg):
+            if event == "line" and self.isInterruptionRequested():
+                raise ExecutionCancelled()
+            return check_interruption
+
+        sys.settrace(check_interruption)
+        try:
+            if self.mode == "command":
+                result, error = self.engine.execute_command(self.code)
+                if error:
+                    self.outcome = "error"
+                    self.error.emit(error)
+                elif result is not None:
+                    self.result_ready.emit(result)
+            else:
+                error = self.engine.execute_script(self.code)
+                if error:
+                    self.outcome = "error"
+                    self.error.emit(error)
+        except ExecutionCancelled:
+            self.outcome = "cancelled"
+            self.cancelled.emit()
+        except Exception as error:
+            self.outcome = "error"
+            self.error.emit(str(error))
+        else:
+            if self.outcome == "running":
+                self.outcome = "completed"
+        finally:
+            sys.settrace(previous_trace)
+
+    def request_stop(self):
+        self.requestInterruption()
 
 
 class StreamRedirector(QObject):
@@ -119,6 +212,7 @@ class MatpyLabWindow(QMainWindow):
     def __init__(self):
         """Configura la ventana principal, los docks, la consola y el motor de ejecución."""
         super().__init__()
+        self.config = load_config()
         self.setWindowTitle("MatpyLab - v0.1")
         self.resize(1200, 800)
 
@@ -135,6 +229,9 @@ class MatpyLabWindow(QMainWindow):
         self.setup_command_window()
 
         self.engine = ExecutionEngine()
+        self.worker = None
+        self.gui_executor = GuiThreadExecutor(self)
+        self.plotter_window = None
 
         self.setup_workspace()
         self.setup_file_explorer()
@@ -145,8 +242,11 @@ class MatpyLabWindow(QMainWindow):
         self.setup_toolbar()
         self.actualizar_autocompletado()
 
-        self.is_dark_mode = False
-        self.aplicar_tema_claro()
+        self.is_dark_mode = self.config.get("theme") != "light"
+        if self.is_dark_mode:
+            self.aplicar_tema_oscuro()
+        else:
+            self.aplicar_tema_claro()
 
         self.actualizar_autocompletado()
 
@@ -201,7 +301,7 @@ class MatpyLabWindow(QMainWindow):
         self.dock_workspace = QDockWidget("Workspace", self)
         self.dock_workspace.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
         self.workspace_table = QTableWidget()
-        self.workspace_table.itemDoubleClicked.connect(self.abrir_inspector_variables)
+        self.workspace_table.cellDoubleClicked.connect(self.editar_variable)
         self.workspace_table.setColumnCount(4)
         self.workspace_table.setHorizontalHeaderLabels(["Name", "Value", "Size", "Class"])
         self.workspace_table.horizontalHeader().setStretchLastSection(True)
@@ -330,17 +430,34 @@ class MatpyLabWindow(QMainWindow):
             eje_integrado().legend(*args, **kwargs)
             self.canvas.draw()
 
+        def ejecutar_en_gui(funcion):
+            def wrapper(*args, **kwargs):
+                return self.gui_executor.invoke(lambda: funcion(*args, **kwargs))
+            return wrapper
+
         funciones_graficas = {
-            'figure': custom_figure, 'plot': custom_plot, 'plot3': custom_plot3,
-            'grid': custom_grid, 'title': custom_title, 'legend': custom_legend,
-            'xlabel': custom_xlabel, 'ylabel': custom_ylabel, 'zlabel': custom_zlabel,
-            'hold': custom_hold
+            'figure': ejecutar_en_gui(custom_figure),
+            'plot': ejecutar_en_gui(custom_plot),
+            'plot3': ejecutar_en_gui(custom_plot3),
+            'grid': ejecutar_en_gui(custom_grid),
+            'title': ejecutar_en_gui(custom_title),
+            'legend': ejecutar_en_gui(custom_legend),
+            'xlabel': ejecutar_en_gui(custom_xlabel),
+            'ylabel': ejecutar_en_gui(custom_ylabel),
+            'zlabel': ejecutar_en_gui(custom_zlabel),
+            'hold': ejecutar_en_gui(custom_hold)
         }
         self.engine.workspace_globals.update(funciones_graficas)
         self.engine.system_keys.update(funciones_graficas.keys())
 
     def closeEvent(self, event):
         """Restaura pyplot para no dejar el monkey patch activo al cerrar la GUI."""
+        if self.worker is not None and self.worker.isRunning():
+            self.worker.request_stop()
+            self.escribir_en_consola("Solicitud de detención enviada; cierra MatpyLab cuando termine la ejecución.\n")
+            event.ignore()
+            return
+
         import matplotlib.pyplot as plt
 
         plt.figure = self._original_figure
@@ -367,14 +484,7 @@ class MatpyLabWindow(QMainWindow):
             self.limpiar_workspace_interfaz()
             return
 
-        resultado, error = self.engine.execute_command(comando)
-
-        if error:
-            self.escribir_en_consola(f"Error: {error}\n")
-        elif resultado is not None:
-            self.escribir_en_consola(f"{resultado}\n")
-
-        self.actualizar_workspace()
+        self.ejecutar_codigo(comando, mode="command")
 
     def limpiar_workspace_interfaz(self):
         self.engine.clear_workspace()
@@ -441,6 +551,33 @@ class MatpyLabWindow(QMainWindow):
 
                 inspector.exec()
 
+    def editar_variable(self, row, column):
+        """Edita una variable compatible y actualiza el namespace del motor."""
+        if self.worker is not None and self.worker.isRunning():
+            self.escribir_en_consola("No se pueden editar variables durante una ejecución.\n")
+            return
+
+        nombre_item = self.workspace_table.item(row, 0)
+        if nombre_item is None:
+            return
+
+        nombre_var = nombre_item.text()
+        if nombre_var in {"np", "pd", "plt"} or nombre_var.startswith("__"):
+            return
+
+        if nombre_var not in self.engine.workspace_globals:
+            return
+
+        valor_actual = self.engine.workspace_globals[nombre_var]
+        if callable(valor_actual) or isinstance(valor_actual, type(sys)):
+            return
+
+        dialog = VariableEditorDialog(nombre_var, valor_actual, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.engine.workspace_globals[nombre_var] = dialog.new_value
+            self.escribir_en_consola(f"Variable '{nombre_var}' actualizada manualmente.\n")
+            self.actualizar_workspace()
+
     def setup_toolbar(self):
         """Configura la barra de herramientas con comandos principales."""
         toolbar = QToolBar("Barra de Herramientas Principal")
@@ -460,9 +597,13 @@ class MatpyLabWindow(QMainWindow):
         toolbar.addAction(new_action)
 
         open_action = QAction(estilo.standardIcon(QStyle.SP_DialogOpenButton), "Abrir", self)
-        open_action.setShortcut("Ctrl+O")
-        open_action.triggered.connect(self.abrir_dialogo_archivo)
+        open_action.triggered.connect(self.open_folder)
         toolbar.addAction(open_action)
+
+        open_script_action = QAction(estilo.standardIcon(QStyle.SP_FileIcon), "Abrir Script", self)
+        open_script_action.setShortcut("Ctrl+O")
+        open_script_action.triggered.connect(self.abrir_dialogo_archivo)
+        toolbar.addAction(open_script_action)
 
         save_action = QAction(estilo.standardIcon(QStyle.SP_DialogSaveButton), "Guardar", self)
         save_action.setShortcut("Ctrl+S")
@@ -474,6 +615,7 @@ class MatpyLabWindow(QMainWindow):
         clear_workspace_act = QAction(estilo.standardIcon(QStyle.SP_TrashIcon), "Clear\nWorkspace", self)
         clear_workspace_act.triggered.connect(self.limpiar_workspace_interfaz)
         toolbar.addAction(clear_workspace_act)
+        self.clear_workspace_action = clear_workspace_act
 
         toolbar.addSeparator()
 
@@ -485,11 +627,24 @@ class MatpyLabWindow(QMainWindow):
         run_action.setShortcut("F5")
         run_action.triggered.connect(self.ejecutar_script)
         toolbar.addAction(run_action)
+        self.run_action = run_action
 
         run_sel_action = QAction(estilo.standardIcon(QStyle.SP_MediaSkipForward), "Run\nSelection", self)
         run_sel_action.setShortcut("F9")
         run_sel_action.triggered.connect(self.ejecutar_seleccion)
         toolbar.addAction(run_sel_action)
+        self.run_selection_action = run_sel_action
+
+        self.stop_action = QAction(estilo.standardIcon(QStyle.SP_BrowserStop), "Stop", self)
+        self.stop_action.setEnabled(False)
+        self.stop_action.triggered.connect(self.detener_ejecucion)
+        toolbar.addAction(self.stop_action)
+
+        serial_plotter_action = QAction(
+            estilo.standardIcon(QStyle.SP_ComputerIcon), "Serial Plotter", self
+        )
+        serial_plotter_action.triggered.connect(self.abrir_serial_plotter)
+        toolbar.addAction(serial_plotter_action)
 
         toolbar.addSeparator()
 
@@ -538,6 +693,14 @@ class MatpyLabWindow(QMainWindow):
         self.toolbox_menu.aboutToShow.connect(actualizar_menu_toolboxes)
         toolboxes_btn.setMenu(self.toolbox_menu)
         toolbar.addWidget(toolboxes_btn)
+        self.toolboxes_button = toolboxes_btn
+
+    def abrir_serial_plotter(self):
+        if self.plotter_window is None:
+            self.plotter_window = SerialPlotterWindow(self)
+        self.plotter_window.show()
+        self.plotter_window.activateWindow()
+        self.plotter_window.raise_()
 
     def nuevo_script(self, contenido="", titulo="Untitled.m"):
         editor = CodeEditor()
@@ -582,12 +745,7 @@ class MatpyLabWindow(QMainWindow):
 
         script = editor.toPlainText()
         self.console_output.append('<span style="color: #2196F3;">>> Ejecutando script...</span><br>')
-        error = self.engine.execute_script(script)
-        if error:
-            self.escribir_en_consola(f"Error: {error}\n")
-        else:
-            self.console_output.append('<span style="color: #4CAF50;">Ejecución finalizada.</span>')
-        self.actualizar_workspace()
+        self.ejecutar_codigo(script)
 
     def ejecutar_seleccion(self):
         editor = self.obtener_editor_actual()
@@ -603,10 +761,60 @@ class MatpyLabWindow(QMainWindow):
             codigo = cursor.selectedText()
             self.console_output.append('<span style="color: #2196F3;">>> Ejecutando línea actual...</span><br>')
 
-        error = self.engine.execute_script(codigo)
-        if error:
-            self.escribir_en_consola(f"Error: {error}\n")
+        self.ejecutar_codigo(codigo)
+
+    def ejecutar_codigo(self, codigo, mode="script"):
+        """Inicia una ejecución asíncrona única y bloquea acciones incompatibles."""
+        if self.worker is not None and self.worker.isRunning():
+            self.escribir_en_consola("Ya hay una ejecución activa; deténla antes de iniciar otra.\n")
+            return
+
+        self.worker = ExecutionWorker(self.engine, codigo, mode, self)
+        self.worker.error.connect(self.mostrar_error_consola)
+        self.worker.result_ready.connect(self.mostrar_resultado_comando)
+        self.worker.cancelled.connect(self.mostrar_ejecucion_cancelada)
+        self.worker.finished.connect(self.restaurar_interfaz)
+
+        self.run_action.setEnabled(False)
+        self.run_selection_action.setEnabled(False)
+        self.stop_action.setEnabled(True)
+        self.console_input.setEnabled(False)
+        self.clear_workspace_action.setEnabled(False)
+        self.toolboxes_button.setEnabled(False)
+        self.worker.start()
+
+    def mostrar_resultado_comando(self, resultado):
+        self.escribir_en_consola(f"{resultado}\n")
+
+    def mostrar_error_consola(self, mensaje_error):
+        self.escribir_en_consola(f"Error: {mensaje_error}\n")
+
+    def mostrar_ejecucion_cancelada(self):
+        self.escribir_en_consola("Ejecución detenida por el usuario.\n")
+
+    def detener_ejecucion(self):
+        if self.worker is not None and self.worker.isRunning():
+            self.worker.request_stop()
+            self.stop_action.setEnabled(False)
+            self.escribir_en_consola("Solicitando detener la ejecución...\n")
+
+    def restaurar_interfaz(self):
+        """Actualiza el workspace y restaura los controles tras la ejecución."""
+        worker = self.worker
+        if worker is None:
+            return
+
+        if worker.outcome == "completed":
+            self.escribir_en_consola("Ejecución finalizada.\n")
         self.actualizar_workspace()
+        self.run_action.setEnabled(True)
+        self.run_selection_action.setEnabled(True)
+        self.stop_action.setEnabled(False)
+        self.console_input.setEnabled(True)
+        self.clear_workspace_action.setEnabled(True)
+        self.toolboxes_button.setEnabled(True)
+        worker.deleteLater()
+        self.worker = None
 
     def crear_plantilla_toolbox(self):
         plantilla = '''import numpy as np
@@ -649,15 +857,26 @@ class MiToolboxPersonalizado(MatpyLabToolbox):
 
     def setup_file_explorer(self):
         """Configura el panel del explorador de archivos del proyecto."""
+        current_path = self.config.get("last_folder", os.path.expanduser("~"))
+        try:
+            current_path = os.path.abspath(current_path)
+            os.chdir(current_path)
+        except Exception as error:
+            print(f"No se pudo acceder a {current_path}; se usará la carpeta personal: {error}")
+            current_path = os.path.expanduser("~")
+            os.chdir(current_path)
+            self.config["last_folder"] = current_path
+            save_config(self.config)
+
         self.dock_files = QDockWidget("Current Folder", self)
         self.dock_files.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
 
         self.file_model = QFileSystemModel()
-        self.file_model.setRootPath(QDir.currentPath())
+        self.file_model.setRootPath(current_path)
 
         self.tree_view = QTreeView()
         self.tree_view.setModel(self.file_model)
-        self.tree_view.setRootIndex(self.file_model.index(QDir.currentPath()))
+        self.tree_view.setRootIndex(self.file_model.index(current_path))
 
         self.tree_view.setColumnHidden(1, True)
         self.tree_view.setColumnHidden(2, True)
@@ -667,6 +886,28 @@ class MiToolboxPersonalizado(MatpyLabToolbox):
         self.dock_files.setWidget(self.tree_view)
 
         self.tree_view.doubleClicked.connect(self.abrir_archivo)
+
+    def open_folder(self):
+        """Selecciona la carpeta de trabajo y sincroniza la aplicación."""
+        current_path = self.config.get("last_folder", os.path.expanduser("~"))
+        folder_path = QFileDialog.getExistingDirectory(
+            self, "Seleccionar Carpeta de Proyecto", current_path
+        )
+
+        if not folder_path:
+            return
+
+        try:
+            os.chdir(folder_path)
+        except OSError as error:
+            self.escribir_en_consola(f"No se pudo cambiar a {folder_path}: {error}\n")
+            return
+
+        self.file_model.setRootPath(folder_path)
+        self.tree_view.setRootIndex(self.file_model.index(folder_path))
+        self.config["last_folder"] = folder_path
+        save_config(self.config)
+        self.escribir_en_consola(f">> Workspace actualizado a: {folder_path}\n")
 
     def abrir_archivo(self, index):
         """Abre un archivo de texto o Python seleccionado en el explorador."""
@@ -760,6 +1001,8 @@ class MiToolboxPersonalizado(MatpyLabToolbox):
             self.aplicar_tema_oscuro()
         else:
             self.aplicar_tema_claro()
+        self.config["theme"] = "dark" if self.is_dark_mode else "light"
+        save_config(self.config)
 
     def aplicar_tema_oscuro(self):
         """Aplica la paleta visual oscura a la interfaz."""
